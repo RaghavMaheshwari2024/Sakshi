@@ -190,10 +190,29 @@ def split_at_impact(results, tracks, calib, clk, mc, impact) -> dict:
     return out
 
 
-def choose_signal(sig: dict, chosen: str | None) -> tuple[list[dict], str | None, str]:
+def _light_at(tracks: list[dict], px, max_dist_px: float = 40.0) -> str | None:
+    """The traffic-light track whose box is nearest the clicked pixel."""
+    best, best_d = None, max_dist_px
+    for t in tracks:
+        if t["concept"] != "traffic light" or not t["frames"]:
+            continue
+        b = np.median([f["box"] for f in t["frames"]], axis=0)
+        dx = max(b[0] - px[0], 0, px[0] - b[2])  # 0 when the click is inside the box
+        dy = max(b[1] - px[1], 0, px[1] - b[3])
+        d = float(np.hypot(dx, dy))
+        if d <= best_d:
+            best, best_d = t["id"], d
+    return best
+
+
+def choose_signal(sig: dict, chosen: str | None, tracks: list[dict] | None = None,
+                  light_px=None) -> tuple[list[dict], str | None, str]:
     """Which traffic light governs the stop line. With several lights in view
     (cross traffic has its own), picking one at random would give wrong
-    verdicts, so the user must choose (calibration.signal_track)."""
+    verdicts, so the user chooses: by track id (calibration.signal_track) or by
+    clicking the signal head (calibration.signal_light_px)."""
+    if not chosen and light_px and tracks:
+        chosen = _light_at(tracks, light_px)
     if chosen and chosen in sig:
         return sig[chosen], chosen, ""
     if len(sig) == 1:
@@ -260,7 +279,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     progress("events", {"impact": impact, "momentum": momentum})
 
     sig = signal_timeline(video, tracks, clk, progress, offline=tracks_override is not None)
-    main_light, signal_track, signal_note = choose_signal(sig, cal_in.get("signal_track"))
+    main_light, signal_track, signal_note = choose_signal(
+        sig, cal_in.get("signal_track"), tracks, cal_in.get("signal_light_px"))
 
     # Statements: transcribe recorded ones with Muse Voice Transcribe.
     statements = []

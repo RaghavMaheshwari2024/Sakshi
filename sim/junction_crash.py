@@ -4,6 +4,7 @@ CCTV-style camera, with exact ground truth logged every frame.
 Needs a running CARLA server (0.9.13+; tested API surface is stable from 0.9.11):
   ./CarlaUE4.sh -RenderOffScreen            # on the GPU machine or a Modal GPU box
   python sim/junction_crash.py --out cases/carla_001 --v1 50 --v2 30 --seed 1
+  (options: --cam-ahead 29 --cam-side 8 --cam-height 11 --fov 90 to move the camera)
 
 Writes:
   <out>/frames/000000.png ...   raw frames
@@ -88,14 +89,24 @@ def main():
     ap.add_argument("--lead", type=float, default=5.0, help="seconds before impact at start")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--host", default="localhost")
+    # Default view: like a CCTV camera facing oncoming traffic, placed beyond the
+    # junction on the side away from B's approach. It sees both cars for their
+    # whole approach (a camera behind A's road sees A for only ~1 s).
+    ap.add_argument("--cam-ahead", type=float, default=29.0, help="camera distance beyond the junction along A's road, m")
+    ap.add_argument("--cam-side", type=float, default=8.0, help="camera offset away from B's side of the road, m")
+    ap.add_argument("--cam-height", type=float, default=11.0, help="camera height above the road, m")
+    ap.add_argument("--fov", type=float, default=90.0, help="horizontal field of view, degrees (CCTV is often 90+)")
     args = ap.parse_args()
     rng = random.Random(args.seed)
     out = Path(args.out)
     (out / "frames").mkdir(parents=True, exist_ok=True)
 
     client = carla.Client(args.host, 2000)
-    client.set_timeout(30.0)
-    world = client.load_world(args.town)
+    client.set_timeout(180.0)  # loading a map can take minutes on a laptop GPU
+    world = client.get_world()
+    if not world.get_map().name.endswith(args.town):
+        print(f"Loading {args.town} (can take a minute or two)...")
+        world = client.load_world(args.town)
     settings = world.get_settings()
     settings.synchronous_mode = True
     settings.fixed_delta_seconds = 1.0 / FPS
@@ -122,17 +133,22 @@ def main():
         car_b = world.spawn_actor(bp.find("vehicle.audi.a2"), tB)
         actors += [car_a, car_b]
 
-        # Fixed CCTV-style camera: 8 m up, 22 m back from the junction, looking at it.
+        # Fixed CCTV-style camera beyond the junction, facing A's oncoming traffic,
+        # on the side of A's road away from where B comes from; it looks at the junction.
         fwd = e1.transform.get_forward_vector()
         right = e1.transform.get_right_vector()
-        cam_loc = carla.Location(cp.x - 14 * fwd.x - 16 * right.x, cp.y - 14 * fwd.y - 16 * right.y, cp.z + 8)
+        b_side = (tB.location.x - cp.x) * right.x + (tB.location.y - cp.y) * right.y
+        away = -1.0 if b_side > 0 else 1.0
+        cam_loc = carla.Location(cp.x + args.cam_ahead * fwd.x + away * args.cam_side * right.x,
+                                 cp.y + args.cam_ahead * fwd.y + away * args.cam_side * right.y,
+                                 cp.z + args.cam_height)
         dx, dy, dz = cp.x - cam_loc.x, cp.y - cam_loc.y, cp.z - cam_loc.z
         yaw = math.degrees(math.atan2(dy, dx))
         pitch = math.degrees(math.atan2(dz, math.hypot(dx, dy)))
         cam_bp = bp.find("sensor.camera.rgb")
         cam_bp.set_attribute("image_size_x", str(W))
         cam_bp.set_attribute("image_size_y", str(H))
-        cam_bp.set_attribute("fov", "70")
+        cam_bp.set_attribute("fov", str(args.fov))
         cam_tf = carla.Transform(cam_loc, carla.Rotation(pitch=pitch, yaw=yaw))
         cam = cast(carla.Sensor, world.spawn_actor(cam_bp, cam_tf))
         actors.append(cam)
@@ -179,13 +195,25 @@ def main():
                 car_b.disable_constant_velocity()
                 released = True
             img.save_to_disk(str(out / "frames" / f"{k:06d}.png"))
-            row = {"i": k, "t": round(ts, 5), "light_A": str(light_a.get_state())}
+            row = {"i": k, "t": round(ts, 5), "sim_frame": snap.frame, "light_A": str(light_a.get_state())}
             for name, v in (("A", car_a), ("B", car_b)):
                 tf, vel = v.get_transform(), v.get_velocity()
                 row[name] = {"x": tf.location.x, "y": tf.location.y, "z": tf.location.z, "yaw": tf.rotation.yaw,
                              "speed_kmh": 3.6 * math.hypot(vel.x, vel.y)}
             frames.append(row)
 
+        # The collision callback runs on another thread and can be seen a tick
+        # late: take the impact frame from the collision event's own frame id.
+        if collisions:
+            impact_frame = next((r["i"] for r in frames if r["sim_frame"] >= collisions[0]), impact_frame)
+        # Where A's signal head is, so the pipeline can pick that light's track.
+        try:
+            boxes = light_a.get_light_boxes()
+            c = boxes[len(boxes) // 2].location
+            light_xyz = [c.x, c.y, c.z]
+        except (AttributeError, IndexError, RuntimeError):
+            loc = light_a.get_location()
+            light_xyz = [loc.x, loc.y, loc.z + 4.5]
         bbA, bbB = car_a.bounding_box.extent, car_b.bounding_box.extent
         light_changes = []
         for r in frames:
@@ -196,11 +224,12 @@ def main():
             "fps": FPS,
             "t_impact": frames[impact_frame]["t"] if impact_frame is not None else None,
             "camera": {"x": cam_loc.x, "y": cam_loc.y, "z": cam_loc.z, "pitch": pitch, "yaw": yaw,
-                       "fov_deg": 70, "width": W, "height": H},
+                       "fov_deg": args.fov, "width": W, "height": H},
             "vehicles": {"A": {"length": 2 * bbA.x, "width": 2 * bbA.y},
                          "B": {"length": 2 * bbB.x, "width": 2 * bbB.y}},
             "signal_changes": light_changes,
             "stop_line_A": [[w.transform.location.x, w.transform.location.y] for w in light_a.get_stop_waypoints()],
+            "light_A_xyz": light_xyz,
             "frames": [{"i": r["i"], "t": r["t"], "A_speed_kmh": r["A"]["speed_kmh"],
                         "B_speed_kmh": r["B"]["speed_kmh"], "A": r["A"], "B": r["B"]} for r in frames],
             "note": "CARLA uses a left-handed frame (x forward, y right, z up); distances are unaffected.",
@@ -209,7 +238,12 @@ def main():
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(FPS), "-i",
                         str(out / "frames" / "%06d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
                         "-crf", "18", str(out / "input_clean.mp4")], check=True)
-        print(f"Wrote {out}; impact at frame {impact_frame}")
+        if impact_frame is None:
+            print(f"Wrote {out}, but the cars did NOT collide: try another --seed")
+        else:
+            print(f"Wrote {out}; impact at frame {impact_frame} (t = {frames[impact_frame]['t']:.2f} s)")
+        print(f"Check the view: open {out / 'frames' / '000000.png'}. If a building or tree blocks it, "
+              "rerun with e.g. --cam-ahead 22, --cam-height 14 or --cam-side 4, or another --seed.")
     finally:
         for a in actors:
             try:
