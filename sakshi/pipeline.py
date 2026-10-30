@@ -33,8 +33,9 @@ from . import config
 from .engine import claims as claims_mod
 from .engine import clock as clock_mod
 from .engine import events, homography, signals
-from .engine.uncertainty import MCConfig, measure, step_displacements
-from .video import crop, ensure_h264_mp4, iter_frames, probe, read_frames
+from .engine.kalman import Smoothed
+from .engine.uncertainty import MCConfig, TrackResult, measure, step_displacements
+from .video import crop, ensure_h264_mp4, find_input_video, iter_frames, probe, read_frames
 
 Progress = Callable[[str, dict], None]
 
@@ -55,13 +56,20 @@ def _time_to_seconds(r: dict) -> float | None:
 def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, progress: Progress,
                 ticks_override=None):
     """Returns (FrameClock, ticks). Ticks are kept for the drop-aware refinement."""
-    small, overlay = [], []
+        # One pass, keeping only the previous frame: memory stays flat for long clips.
+    dup_list, cand_all = [], []
+    prev_g = prev_o = None
     for i, f in iter_frames(video):
         g = cv2.cvtColor(cv2.resize(f, (640, int(640 * f.shape[0] / f.shape[1]))), cv2.COLOR_BGR2GRAY)
-        small.append(g)
+        dup_list.append(prev_g is not None and clock_mod.is_duplicate(prev_g, g))
+        prev_g = g
         if clock_box:
-            overlay.append(cv2.cvtColor(crop(f, clock_box, 0), cv2.COLOR_BGR2GRAY))
-    dup = clock_mod.detect_duplicates(small)
+            o = cv2.cvtColor(crop(f, clock_box, 0), cv2.COLOR_BGR2GRAY)
+            if prev_o is not None and clock_mod.overlay_changed(prev_o, o):
+                cand_all.append(i)
+            prev_o = o
+    dup = np.zeros(n, bool)
+    dup[: min(n, len(dup_list))] = dup_list[:n]
     progress("clock", {"duplicates": int(dup.sum())})
     if ticks_override:  # testing: ticks known from ground truth
         ticks = [tuple(x) for x in ticks_override]
@@ -69,7 +77,7 @@ def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, pro
     if clock_box:
         from .meta import spark
 
-        cand = clock_mod.detect_ticks(overlay)[:60]
+        cand = cand_all[:60]
         frames = read_frames(video, set(cand))
         ticks = []
         for i in cand:
@@ -135,12 +143,73 @@ def labelled_keyframes(video: Path, tracks: list[dict], n_frames: int, around: i
         out.append(img)
     return out
 
+def _split_tracks(tracks: list[dict], ids, i_split: int, before: bool) -> list[dict]:
+    """The given tracks cut at frame i_split (kept: frames <= i if before, else >= i)."""
+    out = []
+    for t in tracks:
+        if t["id"] in ids:
+            fr = [f for f in t["frames"] if (f["i"] <= i_split if before else f["i"] >= i_split)]
+            out.append({**t, "frames": fr})
+    return out
+
+
+def _stitch(pre: TrackResult, post: TrackResult | None, i_split: int) -> TrackResult:
+    """One trajectory from a pre-impact and a post-impact smoothing."""
+    if post is None:
+        return pre
+    k = post.frames > i_split
+    n = min(len(pre.speed_samples), len(post.speed_samples))
+    nom = Smoothed(
+        np.r_[pre.nominal.t, post.nominal.t[k]],
+        np.r_[pre.nominal.x, post.nominal.x[k]],
+        np.r_[pre.nominal.P, post.nominal.P[k]],
+        np.r_[pre.nominal.observed, post.nominal.observed[k]],
+    )
+    return TrackResult(
+        pre.track_id, np.r_[pre.frames, post.frames[k]], nom,
+        np.c_[pre.speed_samples[:n], post.speed_samples[:n][:, k]],
+        np.concatenate([pre.pos_samples[:n], post.pos_samples[:n][:, k]], axis=1),
+        {"smoothed_split_at_frame": int(i_split)},
+    )
+
+
+def split_at_impact(results, tracks, calib, clk, mc, impact) -> dict:
+    """Re-smooth the colliding road users separately before and after contact.
+
+    A smoother run across the impact spreads the sudden post-impact
+    deceleration backwards and under-reads the speed just before contact.
+    Smoothing each side on its own keeps the two motions apart.
+    """
+    ids, i = impact["tracks"], impact["i"]
+    pre = measure(_split_tracks(tracks, ids, i, True), calib, clk, mc)
+    post = measure(_split_tracks(tracks, ids, i, False), calib, clk, mc)
+    out = dict(results)
+    for tid in ids:
+        if tid in pre:
+            out[tid] = _stitch(pre[tid], post.get(tid), i)
+    return out
+
+
+def choose_signal(sig: dict, chosen: str | None) -> tuple[list[dict], str | None, str]:
+    """Which traffic light governs the stop line. With several lights in view
+    (cross traffic has its own), picking one at random would give wrong
+    verdicts, so the user must choose (calibration.signal_track)."""
+    if chosen and chosen in sig:
+        return sig[chosen], chosen, ""
+    if len(sig) == 1:
+        tid = next(iter(sig))
+        return sig[tid], tid, ""
+    if not sig:
+        return [], None, "no traffic light tracked"
+    return [], None, (f"{len(sig)} traffic lights in view ({', '.join(sorted(sig))}); "
+                      "choose which one governs the stop line")
+
 
 def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] | None = None,
         mc: MCConfig | None = None) -> dict:
     case_dir = Path(case_dir)
     inp = json.loads((case_dir / "case_input.json").read_text())
-    src = next(p for p in case_dir.iterdir() if p.stem == "input")
+    src = find_input_video(case_dir)
     video = ensure_h264_mp4(src, case_dir)
     info = probe(video)
     progress("video", {"frames": info.n, "fps": info.fps, "size": [info.width, info.height]})
@@ -179,6 +248,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     impact = impacts[0] if impacts else None
     braking, momentum, speeds = {}, None, {}
     if impact:
+        results = split_at_impact(results, tracks, calib, clk, mc, impact)
+        progress("physics", {"split_at_frame": impact["i"]})
         for tid in impact["tracks"]:
             braking[tid] = events.braking_onset(results[tid], impact["t"])
             speeds[tid] = {
@@ -189,7 +260,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     progress("events", {"impact": impact, "momentum": momentum})
 
     sig = signal_timeline(video, tracks, clk, progress, offline=tracks_override is not None)
-    main_light = next(iter(sig.values()), [])
+    main_light, signal_track, signal_note = choose_signal(sig, cal_in.get("signal_track"))
 
     # Statements: transcribe recorded ones with Muse Voice Transcribe.
     statements = []
@@ -216,7 +287,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     checked = []
     ctx = {"impact_t": impact["t"] if impact else None, "signal_changes": main_light,
-           "stop_line": cal_in.get("stop_line_m"), "braking": braking}
+            "stop_line": cal_in.get("stop_line_m"), "braking": braking, "signal_note": signal_note}
     if inp.get("claims_override"):  # testing: claims written by hand, no model call
         checked = [claims_mod.evaluate(c, results, ctx) for c in inp["claims_override"]]
     elif statements and party:
@@ -232,6 +303,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         "braking": braking,
         "momentum_check": momentum,
         "signal_changes": main_light,
+        "signal_track": signal_track,
         "claims": [{k: c[k] for k in ("statement_id", "quote", "verdict", "reason", "measured")} for c in checked],
         "clock_method": clk.method,
         "calibration_rms_m": round(calib.rms_err_m, 3),

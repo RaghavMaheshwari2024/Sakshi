@@ -33,11 +33,23 @@ def _intersect(a, b) -> bool:
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
+def _closing_speed(ra: TrackResult, ka: int, rb: TrackResult, kb: int) -> float:
+    """How fast the two road users approach each other (m/s, > 0 = closing)."""
+    d = ra.nominal.pos[ka] - rb.nominal.pos[kb]
+    n = np.linalg.norm(d)
+    if n < 1e-6:
+        return 0.0
+    return float(-(d @ (ra.nominal.vel[ka] - rb.nominal.vel[kb])) / n)
+
+
 def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
-                   max_gap_m: float = 4.5) -> list[dict]:
-    """First frame where two road users' boxes touch in the image AND their
-    ground positions are within `max_gap_m`. Both conditions are needed: boxes
-    overlap all the time in perspective without any contact."""
+                   max_gap_m: float = 4.5, min_closing_ms: float = 1.0,
+                   lookback_s: float = 0.6) -> list[dict]:
+    """First frame where two road users' boxes touch in the image, their ground
+    positions are within `max_gap_m`, AND they were closing on each other at
+    `min_closing_ms` or more in the `lookback_s` before. The closing test rejects
+    vehicles that only look close: side by side in adjacent lanes, or one
+    following another at the same speed, never close the gap."""
     by_id = {t["id"]: t for t in tracks}
     impacts = []
     ids = [i for i in results if by_id[i]["concept"] in MOVERS]
@@ -45,13 +57,20 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
         ra, rb = results[a], results[b]
         ba, bb = _boxes_by_frame(by_id[a]), _boxes_by_frame(by_id[b])
         common = np.intersect1d(ra.frames, rb.frames)
+        closing = {}
+        for i in common:
+            ka = int(np.searchsorted(ra.frames, i))
+            kb = int(np.searchsorted(rb.frames, i))
+            closing[int(i)] = (_closing_speed(ra, ka, rb, kb), float(ra.nominal.t[ka]))
         for i in common:
             if i not in ba or i not in bb or not _intersect(ba[i], bb[i]):
                 continue
             ka = int(np.searchsorted(ra.frames, i))
             kb = int(np.searchsorted(rb.frames, i))
             gap = float(np.linalg.norm(ra.nominal.pos[ka] - rb.nominal.pos[kb]))
-            if gap <= max_gap_m:
+            t_i = float(ra.nominal.t[ka])
+            recent = [c for c, tc in closing.values() if t_i - lookback_s <= tc <= t_i]
+            if gap <= max_gap_m and recent and max(recent) >= min_closing_ms:
                 t = float(ra.nominal.t[ka])
                 dt = float(np.median(np.diff(ra.nominal.t))) if len(ra.nominal.t) > 1 else 0.04
                 impacts.append(
@@ -74,22 +93,31 @@ def window_speed(res: TrackResult, t0: float, t1: float) -> dict | None:
             "lo90": round(float(lo), 1), "hi90": round(float(hi), 1)}
 
 
-def braking_onset(res: TrackResult, t_impact: float, min_duration_s: float = 0.25) -> dict:
-    """Latest sustained run of deceleration beyond BRAKE_DECEL before impact."""
-    a = res.nominal.long_acc
+def braking_onset(res: TrackResult, t_impact: float, min_duration_s: float = 0.25,
+                  lookback_s: float = 3.0) -> dict:
+    """Latest sustained run of deceleration beyond BRAKE_DECEL in the
+    `lookback_s` before impact. The run need not last until contact: a driver
+    may brake hard and release (or the wheels lock) just before the hit."""
+    a = np.nan_to_num(res.nominal.long_acc, nan=0.0)
     t = res.nominal.t
-    before = t < t_impact
-    braking = before & (np.nan_to_num(a, nan=0.0) < BRAKE_DECEL)
-    onset = None
-    k = int(np.flatnonzero(before)[-1]) if before.any() else -1
-    while k >= 0 and braking[k]:
-        onset = k
-        k -= 1
-    if onset is None or t[np.flatnonzero(before)[-1]] - t[onset] < min_duration_s:
+    idx = np.flatnonzero((t < t_impact) & (t >= t_impact - lookback_s))
+    runs, start = [], None
+    for k in idx:
+        if a[k] < BRAKE_DECEL:
+            start = k if start is None else start
+        elif start is not None:
+            runs.append((start, k - 1))
+            start = None
+    if start is not None:
+        runs.append((start, int(idx[-1])))
+    runs = [(s, e) for s, e in runs if t[e] - t[s] >= min_duration_s]
+    if not runs:
         return {"detected": False}
-    return {"detected": True, "t": round(float(t[onset]), 3),
-            "seconds_before_impact": round(float(t_impact - t[onset]), 2),
-            "peak_decel_ms2": round(float(np.nanmin(a[onset:before.sum()])), 2)}
+    s, e = runs[-1]
+    return {"detected": True, "t": round(float(t[s]), 3),
+            "seconds_before_impact": round(float(t_impact - t[s]), 2),
+            "ended_before_impact_s": round(float(t_impact - t[e]), 2),
+            "peak_decel_ms2": round(float(a[s:e + 1].min()), 2)}
 
 
 def momentum_check(impact: dict, results: dict[str, TrackResult], tracks: list[dict],

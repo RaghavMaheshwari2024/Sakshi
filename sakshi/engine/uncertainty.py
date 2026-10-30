@@ -58,7 +58,7 @@ class TrackResult:
             "speed_kmh": np.round(med, 2).tolist(),
             "lo90_kmh": np.round(lo, 2).tolist(),
             "hi90_kmh": np.round(hi, 2).tolist(),
-            "long_acc_ms2": [None if np.isnan(a) else round(float(a), 3) for a in self.nominal.long_acc],
+            "long_acc_ms2": [round(float(a), 3) if np.isfinite(a) else None for a in self.nominal.long_acc],
             "observed": self.nominal.observed.tolist(),
             **self.extras,
         }
@@ -74,7 +74,9 @@ def _metres_per_px(H: np.ndarray, p: np.ndarray) -> np.ndarray:
 
 def _track_arrays(track: dict, clock: FrameClock):
     """Pixel contact points per frame over the track's lifetime (NaN = unobserved)."""
-    by_i = {f["i"]: f["contact_px"] for f in track["frames"] if f.get("contact_px")}
+    n = len(clock.t)  # ignore frame numbers the clip does not have
+    by_i = {f["i"]: f["contact_px"] for f in track["frames"]
+            if f.get("contact_px") and 0 <= f["i"] < n}
     if not by_i:
         return None
     i0, i1 = min(by_i), max(by_i)
@@ -144,17 +146,25 @@ def measure(tracks: list[dict], calib: hg.Calibration, clock: FrameClock,
         ip = calib.image_pts + rng.normal(0, cfg.click_sigma_px, calib.image_pts.shape)
         gp = calib.ground_pts + rng.normal(0, cfg.ground_sigma_m, calib.ground_pts.shape)
         H, _ = cv2.findHomography(ip, gp, method=0)
-        if H is None:
+        if H is None or not np.isfinite(H).all() or abs(np.linalg.det(H)) < 1e-12:
             continue
         t_all = clock.sample(rng)  # correlated timing error, per the clock's method
         for tid, (fr, px) in prepared.items():
             bias = rng.uniform(0, cfg.contact_bias_px)
             # Model uncertainty: how abruptly vehicles may change acceleration.
             q = float(np.exp(rng.uniform(np.log(cfg.jerk_q_range[0]), np.log(cfg.jerk_q_range[1]))))
-            s = _run_once(H, fr, px, t_all[fr], cfg.jitter_px, rng, bias, q)
+            try:
+                s = _run_once(H, fr, px, t_all[fr], cfg.jitter_px, rng, bias, q)
+            except (np.linalg.LinAlgError, ValueError):
+                continue  # a degenerate perturbed calibration: drop this sample
+            if not np.isfinite(s.speed).all():
+                continue
             samples_v[tid].append(s.speed * KMH)
             samples_p[tid].append(s.pos)
     for tid, (fr, _) in prepared.items():
+        if not samples_v[tid]:  # every sample failed: report the nominal track, zero spread
+            samples_v[tid] = [nominal[tid].speed * KMH]
+            samples_p[tid] = [nominal[tid].pos]
         out[tid] = TrackResult(
             tid, fr, nominal[tid], np.array(samples_v[tid]), np.array(samples_p[tid])
         )

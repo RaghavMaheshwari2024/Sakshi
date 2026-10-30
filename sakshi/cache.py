@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +44,16 @@ def get_json(namespace: str, key: str) -> Any | None:
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def _write_atomic(dest: Path, text: str) -> None:
+    """Write to a temporary file, then rename: an interrupted run (Ctrl+C) can
+    never leave a half-written cache file that breaks the next run."""
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, dest)
+
+
 def put_json(namespace: str, key: str, value: Any) -> None:
-    _path(namespace, key, "json").write_text(json.dumps(value, indent=1, default=str))
+    _write_atomic(_path(namespace, key, "json"), json.dumps(value, indent=1, default=str))
 
 
 def get_jsonl(namespace: str, key: str) -> list[dict] | None:
@@ -55,6 +64,5 @@ def get_jsonl(namespace: str, key: str) -> list[dict] | None:
 
 
 def put_jsonl(namespace: str, key: str, rows: list[dict]) -> None:
-    with _path(namespace, key, "jsonl").open("w") as f:
-        for r in rows:
-            f.write(json.dumps(r, default=str) + "\n")
+    _write_atomic(_path(namespace, key, "jsonl"),
+            "".join(json.dumps(r, default=str) + "\n" for r in rows))

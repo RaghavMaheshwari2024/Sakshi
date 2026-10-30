@@ -6,6 +6,7 @@ opencv-python-headless>=4.9
 requests>=2.31
 pydantic>=2.6
 fastapi>=0.110
+starlette>=0.39  # FileResponse Range requests, so the video can be seeked
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 python-dotenv>=1.0

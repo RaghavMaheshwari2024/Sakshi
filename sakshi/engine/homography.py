@@ -46,8 +46,10 @@ def fit(image_pts, ground_pts) -> Calibration:
     # Guard against near-collinear clicks, which give a meaningless H.
     if np.linalg.matrix_rank(np.c_[gp - gp.mean(0)], tol=1e-3) < 2:
         raise ValueError("Ground points are collinear; spread them over the road.")
+    if np.linalg.matrix_rank(np.c_[ip - ip.mean(0)], tol=1.0) < 2:
+        raise ValueError("Image points lie on one line; click points spread over the road.")
     H, _ = cv2.findHomography(ip, gp, method=0)
-    if H is None:
+    if H is None or not np.isfinite(H).all() or abs(np.linalg.det(H)) < 1e-12:
         raise ValueError("Homography fit failed; check the point pairs.")
     err = np.linalg.norm(img_to_ground(H, ip) - gp, axis=1)
     return Calibration(H, ip, gp, float(np.sqrt((err**2).mean())), float(err.max()))

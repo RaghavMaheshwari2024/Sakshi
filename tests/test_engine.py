@@ -63,7 +63,7 @@ def test_signal_timeline_debounces_noise():
     states = [(i * 0.04, "green") for i in range(30)] + [(1.2, "red")] + \
              [(1.24 + i * 0.04, "green") for i in range(5)] + [(1.5 + i * 0.04, "red") for i in range(20)]
     tl = signals.timeline(states)
-    assert [c["state"] for c in tl] == ["green", "red"]
+    assert [c["state"] for c in tl] == ["green", "red", "unknown"]
     assert signals.state_at(tl, 2.0) == "red"
 
 

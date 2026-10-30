@@ -4,6 +4,7 @@ are always decoded sequentially from the same file sent to SAM."""
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,9 +23,32 @@ class VideoInfo:
     pts_s: np.ndarray  # container timestamps, seconds
 
 
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+
+
+def require_ffmpeg() -> None:
+    """Fail with a clear message instead of a bare FileNotFoundError."""
+    missing = [b for b in ("ffmpeg", "ffprobe") if shutil.which(b) is None]
+    if missing:
+        raise RuntimeError(
+            f"{' and '.join(missing)} not found. Install ffmpeg 5.1 or newer "
+            "(Ubuntu: sudo apt install ffmpeg) and make sure it is on PATH."
+        )
+
+
+def find_input_video(case_dir: Path) -> Path:
+    """The uploaded clip: input.<video extension> (never input_h264.mp4 or other files)."""
+    found = sorted(p for p in Path(case_dir).iterdir()
+                   if p.stem == "input" and p.suffix.lower() in VIDEO_EXTS)
+    if not found:
+        raise FileNotFoundError(f"No input video (input.mp4, input.mov, ...) in {case_dir}")
+    return found[0]
+
+
 def ensure_h264_mp4(src: Path, dst_dir: Path) -> Path:
     """SAM 3.1 accepts MP4/MOV with H.264/H.265/MPEG-4 (not VP9/WebM).
     Re-encode anything else, keeping every frame (no frame-rate conversion)."""
+    require_ffmpeg()
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
          "stream=codec_name", "-of", "json", str(src)],

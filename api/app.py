@@ -32,7 +32,7 @@ load_dotenv()  # before sakshi.config reads the environment
 
 from sakshi.config import CASES_DIR  # noqa: E402
 from sakshi.pipeline import run  # noqa: E402
-from sakshi.video import read_frames  # noqa: E402
+from sakshi.video import find_input_video, read_frames  # noqa: E402
 
 app = FastAPI(title="Sakshi")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -44,6 +44,16 @@ def _case(case_id: str) -> Path:
         raise HTTPException(404, "case not found")
     return d
 
+def _video(d: Path) -> Path:
+    """The clip the pipeline measures (re-encoded copy if one was made)."""
+    h264 = d / "input_h264.mp4"
+    if h264.exists():
+        return h264
+    try:
+        return find_input_video(d)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    
 
 def _inp(d: Path) -> dict:
     return json.loads((d / "case_input.json").read_text())
@@ -72,8 +82,7 @@ async def create_case(video: UploadFile = File(...), statements_json: str = Form
 @app.get("/cases/{case_id}/frame/{i}.jpg")
 def frame(case_id: str, i: int):
     d = _case(case_id)
-    src = next(p for p in d.iterdir() if p.stem.startswith("input"))
-    f = read_frames(src, {i}).get(i)
+    f = read_frames(_video(d), {i}).get(i)
     if f is None:
         raise HTTPException(404, "frame out of range")
     return Response(cv2.imencode(".jpg", f)[1].tobytes(), media_type="image/jpeg")
@@ -84,10 +93,18 @@ def calibration(case_id: str, body: dict):
     from sakshi.engine import homography
 
     d = _case(case_id)
-    cal = homography.fit(body["image_pts"], body["ground_pts_m"])  # validates, raises on bad input
+    try:
+        cal = homography.fit(body["image_pts"], body["ground_pts_m"])
+    except (KeyError, ValueError) as exc:  # tell the UI what is wrong with the clicks
+        raise HTTPException(400, f"calibration rejected: {exc}") from exc
+    line = body.get("stop_line_m")
+    if line and (len(line) != 2 or
+                 ((line[0][0] - line[1][0]) ** 2 + (line[0][1] - line[1][1]) ** 2) ** 0.5 < 0.5):
+        raise HTTPException(400, "stop line needs two points at least 0.5 m apart")
     inp = _inp(d)
     inp["calibration"] = body
     (d / "case_input.json").write_text(json.dumps(inp, indent=1))
+    (d / "case.json").unlink(missing_ok=True)  # inputs changed: the old result is stale
     return {"reproj_rms_m": cal.rms_err_m, "reproj_max_m": cal.max_err_m, "H": cal.H.tolist()}
 
 
@@ -97,14 +114,31 @@ def party(case_id: str, body: dict[str, str]):
     inp = _inp(d)
     inp["party_to_track"] = body
     (d / "case_input.json").write_text(json.dumps(inp, indent=1))
+    (d / "case.json").unlink(missing_ok=True)  # inputs changed: the old result is stale
     return {"ok": True}
 
 
+_RUNNING: set[str] = set()
+_RUNNING_LOCK = threading.Lock()
+
+
 @app.get("/cases/{case_id}/run")
-async def run_case(case_id: str):
+async def run_case(case_id: str, force: bool = False):
+    """Runs the pipeline once. A browser EventSource reconnects automatically
+    when a stream ends, so a finished case answers "done" at once instead of
+    running again (pass ?force=true to re-run), and a second request while a
+    run is in progress gets 409. The UI should still call es.close() on done."""
     d = _case(case_id)
     if not _inp(d).get("calibration"):
         raise HTTPException(400, "calibrate first")
+    if (d / "case.json").exists() and not force:
+        async def already_done():
+            yield 'event: done\ndata: {"cached": true}\n\n'
+        return StreamingResponse(already_done(), media_type="text/event-stream")
+    with _RUNNING_LOCK:
+        if case_id in _RUNNING:
+            raise HTTPException(409, "this case is already running")
+        _RUNNING.add(case_id)
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
 
@@ -116,6 +150,9 @@ async def run_case(case_id: str):
             run(d, progress=progress)
         except Exception as exc:  # report to the UI instead of dying silently
             loop.call_soon_threadsafe(q.put_nowait, {"stage": "error", "data": {"message": str(exc)}})
+        finally:
+            with _RUNNING_LOCK:
+                _RUNNING.discard(case_id)
 
     threading.Thread(target=work, daemon=True).start()
 
@@ -139,7 +176,4 @@ def case_json(case_id: str):
 
 @app.get("/cases/{case_id}/video")
 def case_video(case_id: str):
-    d = _case(case_id)
-    h264 = d / "input_h264.mp4"
-    src = h264 if h264.exists() else next(p for p in d.iterdir() if p.stem == "input")
-    return FileResponse(src)
+    return FileResponse(_video(_case(case_id)))  # supports Range requests, so seeking works

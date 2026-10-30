@@ -92,8 +92,10 @@ def smooth(t: np.ndarray, z: np.ndarray, *, meas_sigma_m: float | np.ndarray = 0
     x = np.zeros(6)
     x[:2] = z[first]
     early = np.flatnonzero(obs)[:10]
-    if len(early) >= 3:  # initial velocity: straight-line fit to the first observations
-        A = np.c_[np.ones(len(early)), t[early] - t[first]]
+    if len(early) >= 3:
+        # Initial state AT t[0] (the filter starts there): straight-line fit to
+        # the first observations, extrapolated back over any leading gap.
+        A = np.c_[np.ones(len(early)), t[early] - t[0]]
         coef, *_ = np.linalg.lstsq(A, z[early], rcond=None)
         x[:2], x[2:4] = coef[0], coef[1]
     P = np.diag([r[first] ** 2] * 2 + [100.0] * 2 + [9.0] * 2)

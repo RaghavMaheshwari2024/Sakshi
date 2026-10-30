@@ -71,15 +71,21 @@ Every call is cached (`cache/`) and logged (`logs/model_usage.jsonl`);
 
 ## Current results (synthetic case, 12% of frames dropped + a 5-frame burst)
 
-| Clock method | Speed error, last 2 s before impact | True speed inside 90% interval |
-| --- | --- | --- |
-| Nominal frame rate | 13.5–22.6% | 17–20% |
-| Clock ticks only | 5.4–9.1% | 65–70% |
-| **Drop-aware (ticks + motion)** | **2.0–2.6%** | **78–95%** |
+| Nominal frame rate | 12.8–22.0% | 20–22% |
+| Clock ticks only | 5.0–8.6% | 68–74% |
+| **Drop-aware (ticks + motion)** | **1.6–2.1%** | **87–100%** |
 
 Impact time within 0.08 s; signal changes exact; 3/3 claim verdicts correct;
-momentum check consistent (residual 0.01). Known limit: at 25% frame drops the
-error is about 6% and the intervals are too narrow (45–55% coverage).
+momentum check consistent (residual 0.01). The colliding vehicles are smoothed
+separately before and after contact, so post-impact deceleration does not leak
+into the pre-impact speed.
+
+Known limits:
+- At 25% frame drops the error is about 6% and the intervals are too narrow (45–55% coverage).
+- The road is treated as flat (one homography). Slopes and the gap between the
+  lowest mask pixel and the true tyre line are carried as uncertainty, not corrected.
+- With several traffic lights in view, the user must pick the one that governs
+  the stop line (`calibration.signal_track`); otherwise signal claims are "can't tell".
 
 These are synthetic numbers. The pitch must quote CARLA (`sim/`) and real-camera results.
 

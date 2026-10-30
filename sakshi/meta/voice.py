@@ -22,6 +22,9 @@ from ..usage_log import logged
 
 
 def _to_wav(src: Path) -> Path:
+    from ..video import require_ffmpeg
+
+    require_ffmpeg()
     out = Path(tempfile.mkstemp(suffix=".wav")[1])
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-ac", "1", "-ar", "24000",

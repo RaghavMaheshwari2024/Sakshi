@@ -227,7 +227,7 @@ def _allowed_numbers(facts: dict) -> set[str]:
         if isinstance(x, bool):
             return
         if isinstance(x, (int, float)):
-            for nd in (0, 1, 2):
+            for nd in (0, 1, 2, 3, 4):
                 nums.add(f"{round(float(x), nd):.{nd}f}")
             nums.add(str(int(round(x))))
         elif isinstance(x, dict):

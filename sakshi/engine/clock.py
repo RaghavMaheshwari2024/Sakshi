@@ -69,26 +69,33 @@ def detect_duplicates(gray_frames: list[np.ndarray], pixel_thresh: int = 12,
     """
     dup = np.zeros(len(gray_frames), dtype=bool)
     for i in range(1, len(gray_frames)):
-        diff = np.abs(gray_frames[i].astype(np.int16) - gray_frames[i - 1])
-        dup[i] = (diff > pixel_thresh).mean() < frac_thresh
+        dup[i] = is_duplicate(gray_frames[i - 1], gray_frames[i], pixel_thresh, frac_thresh)
     return dup
+
+
+def is_duplicate(prev: np.ndarray, cur: np.ndarray, pixel_thresh: int = 12,
+                 frac_thresh: float = 2e-4) -> bool:
+    """One step of `detect_duplicates`, for streaming through long clips."""
+    diff = np.abs(cur.astype(np.int16) - prev)
+    return bool((diff > pixel_thresh).mean() < frac_thresh)
+
+
+def overlay_changed(prev: np.ndarray, cur: np.ndarray, thresh: float = 8.0) -> bool:
+    return bool(np.abs(cur.astype(np.int16) - prev.astype(np.int16)).mean() > thresh)
 
 
 def detect_ticks(overlay_crops: list[np.ndarray], thresh: float = 8.0) -> list[int]:
     """Frames where the clock overlay changed: candidates to read with Muse Spark."""
-    ticks = []
-    for i in range(1, len(overlay_crops)):
-        a = overlay_crops[i].astype(np.int16)
-        b = overlay_crops[i - 1].astype(np.int16)
-        if np.abs(a - b).mean() > thresh:
-            ticks.append(i)
-    return ticks
+    return [i for i in range(1, len(overlay_crops))
+            if overlay_changed(overlay_crops[i - 1], overlay_crops[i], thresh)]
 
 
 def _check_ticks(ticks):
     ticks = sorted(ticks)
     if len(ticks) < 2:
         raise ValueError("Need at least two clock ticks.")
+    if np.any(np.diff([i for i, _ in ticks]) <= 0):
+        raise ValueError("Two clock ticks share a frame; each tick must be on its own frame.")
     if np.any(np.diff([s for _, s in ticks]) <= 0):
         raise ValueError("Clock readings are not increasing; check the overlay reads.")
     return ticks

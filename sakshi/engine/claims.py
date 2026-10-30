@@ -14,10 +14,14 @@ from .uncertainty import TrackResult
 SPEED_TOLERANCE = 0.10
 
 
+COLOUR = {"yellow": "amber", "orange": "amber", "amber": "amber", "red": "red", "green": "green"}
+
+
 def _speed_window(claim: dict, res: TrackResult, impact_t: float | None, cross_t: float | None):
-    when = claim["when"]
-    if when == "at_stop_line" and cross_t is not None:
-        return events.window_speed(res, cross_t - 0.2, cross_t + 0.2)
+    when = claim.get("when", "unspecified")
+    if when == "at_stop_line":
+        # Never fall back to the pre-impact window: that is a different moment.
+        return events.window_speed(res, cross_t - 0.2, cross_t + 0.2) if cross_t is not None else None
     if impact_t is None:
         return None
     if when == "at_impact":
@@ -72,15 +76,22 @@ def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
 
     if q == "signal_state_at_stop_line":
         changes = ctx.get("signal_changes") or []
-        if cross_t is None or not changes:
-            out["reason"] = "stop line or signal not visible/calibrated"
+        if not changes:
+            out["reason"] = ctx.get("signal_note") or "no traffic light tracked"
+            return out
+        if cross_t is None:
+            out["reason"] = "no stop line marked, or this road user did not cross it"
             return out
         actual = signals.state_at(changes, cross_t)
         out["measured"] = {"stop_line_t": round(cross_t, 3), "signal": actual}
         if actual is None:
-            out["reason"] = "signal state unknown at the crossing time"
+            out["reason"] = "the signal was not visible at the crossing time"
             return out
-        claimed = (claim.get("value_text") or "").lower()
+        said = (claim.get("value_text") or "").strip().lower()
+        claimed = COLOUR.get(said)
+        if claimed is None:
+            out["reason"] = f"'{said}' is not a signal colour"
+            return out
         out["verdict"] = "consistent" if claimed == actual else "inconsistent"
         last_change = max((c for c in changes if c["t"] <= cross_t), key=lambda c: c["t"])
         out["reason"] = (

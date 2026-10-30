@@ -35,14 +35,37 @@ def classify_lamp(crop_bgr: np.ndarray) -> tuple[str, float]:
     return (best, conf) if conf >= 0.6 else ("unclear", conf)
 
 
-def timeline(states: list[tuple[float, str]], min_hold: int = 3) -> list[dict]:
-    """[(t, state)] per frame -> debounced list of changes [{"t", "state"}]."""
+SEEN = ("red", "amber", "green")
+
+
+def timeline(states: list[tuple[float, str]], min_hold: int = 3,
+             max_unseen_s: float = 0.5) -> list[dict]:
+    """[(t, state)] per frame -> debounced list of changes [{"t", "state"}].
+
+    "unclear" and "off" (lamp hidden, e.g. by a passing bus) are not states of
+    the signal. If the lamp goes unseen for longer than `max_unseen_s` (hidden,
+    or not tracked), the timeline records "unknown" from just after the last
+    clear frame, so a claim about that moment is answered "can't tell" instead
+    of assuming nothing changed. The same applies after the last clear frame.
+    """
     out: list[dict] = []
     current = None
     run_state, run_start, run_len = None, 0.0, 0
-    for t, st in states:
-        if st in ("unclear",):
+    last_seen = None
+
+    def mark_unknown(seen_t: float):
+        nonlocal current, run_state, run_len
+        current, run_state, run_len = "unknown", None, 0
+        out.append({"t": round(seen_t + 1e-3, 3), "state": "unknown"})
+
+    for t, st in sorted(states):
+        if last_seen is not None and t - last_seen > max_unseen_s:
+            if current not in (None, "unknown"):
+                mark_unknown(last_seen)
+            run_state, run_len = None, 0  # never join frames across a long gap
+        if st not in SEEN:
             continue
+        last_seen = t
         if st == run_state:
             run_len += 1
         else:
@@ -50,12 +73,15 @@ def timeline(states: list[tuple[float, str]], min_hold: int = 3) -> list[dict]:
         if run_len == min_hold and run_state != current:
             current = run_state
             out.append({"t": round(run_start, 3), "state": current})
+    if last_seen is not None and current not in (None, "unknown"):
+        mark_unknown(last_seen)
     return out
 
 
 def state_at(changes: list[dict], t: float) -> str | None:
+    """Signal state at time t; None if never seen by then, or not visible then."""
     s = None
     for c in changes:
         if c["t"] <= t:
             s = c["state"]
-    return s
+    return None if s == "unknown" else s
