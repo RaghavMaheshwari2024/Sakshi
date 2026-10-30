@@ -8,6 +8,7 @@ against the measurements, with honest 90% intervals.
 Sakshi reports measurements to support expert review. It never states who is at fault.
 
 ## example env
+```bash
    MODEL_API_KEY=
    SAKSHI_SAM_MODEL=sam-3.1
    SAKSHI_SPARK_MODEL=muse-spark-1.3
