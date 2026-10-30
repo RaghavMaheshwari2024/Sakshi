@@ -46,3 +46,17 @@ def test_stream_to_tracks():
     assert f[0]["contact_px"] == [110.0, 208.5] or tuple(f[0]["contact_px"]) == (110.0, 208.5)
     assert f[2]["contact_px"][0] == 120.0
     assert f[0]["area_px"] == 98
+
+
+
+def test_rle_round_trip_and_paste():
+    from sakshi.masks import paste_mask, rle_to_mask
+
+    res = asyncio.run(_parse(_replay(_stream())))
+    f = result_to_tracks(res, "car")[0]["frames"][0]
+    local = rle_to_mask(f["rle"])
+    expected = np.zeros((10, 20), np.uint8)
+    expected[2:9, 3:17] = 1
+    assert (local == expected).all()
+    full = paste_mask((360, 640), f["box"], f["rle"])
+    assert full.sum() == 98 and full[202:209, 103:117].all()

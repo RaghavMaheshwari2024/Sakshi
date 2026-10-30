@@ -27,6 +27,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env            # add MODEL_API_KEY
 python scripts/list_models.py   # confirm the model IDs your key can use
+python scripts/check_sam.py my_clip.mp4 --concepts car   # SAM 3.1 gate: watch my_clip_tracks.mp4
 
 # Engine end to end on a synthetic crash with exact ground truth (no API calls):
 python scripts/make_synthetic_case.py
