@@ -14,6 +14,7 @@ Private mode routes jobs 2 and 3 to Muse Glimmer on our own GPU.
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import re
 from typing import cast
@@ -100,20 +101,41 @@ SCENE_SCHEMA = {
 }
 
 
-def describe_scene(labelled_keyframes: list[np.ndarray], statements: list[dict]) -> dict:
+def _pin(schema: dict, path: list[str], values: list[str]) -> dict:
+    """Copy of `schema` whose string field at `path` may only take `values`, so
+    the model cannot invent a track or statement id (structured output enforces it)."""
+    out = copy.deepcopy(schema)
+    if not values:
+        return out
+    node = out
+    for key in path:
+        node = node[key]
+    node["enum"] = sorted(set(values))
+    return out
+
+
+def describe_scene(labelled_keyframes: list[np.ndarray], statements: list[dict],
+                   track_ids: list[str]) -> dict:
     """`labelled_keyframes` have track ids drawn on them (see pipeline)."""
     frames = labelled_keyframes[:40]  # well under the ~50-image guideline
     text = (
         "These are keyframes, in time order, from a fixed traffic camera. Each tracked "
-        "road user is outlined and labelled with a track id. Describe each track id "
-        "visually, the road layout, and the order of events in plain words. Do NOT "
-        "estimate any speed, distance or time: those are measured elsewhere. Then, "
-        "using the statements below, suggest which track each statement-giver was "
-        "driving or riding, with a reason; omit a statement if you cannot tell.\n\n"
+        "road user is outlined and labelled with its track id; the ONLY track ids are: "
+        f"{', '.join(track_ids)}. Describe what you see for each of those ids (type, "
+        "colour, where it moves). Describe only what is visible: do not name streets "
+        "or add road users that are not labelled. Do NOT estimate any speed, distance "
+        "or time: those are measured elsewhere. Then, using the statements below (each "
+        "has an id), suggest which track each statement-giver was driving or riding, "
+        "with a reason based on what you see (for example the colour of the vehicle); "
+        "omit a statement if you cannot tell.\n\n"
         "Statements:\n" + json.dumps(statements, ensure_ascii=False, indent=1)
     )
+    schema = _pin(SCENE_SCHEMA, ["properties", "tracks", "items", "properties", "track_id"], track_ids)
+    schema = _pin(schema, ["properties", "party_to_track", "items", "properties", "track_id"], track_ids)
+    schema = _pin(schema, ["properties", "party_to_track", "items", "properties", "statement_id"],
+                  [s["id"] for s in statements])
     messages = [{"role": "user", "content": [{"type": "text", "text": text}, *map(_img_part, frames)]}]
-    return _chat_json("describe_scene", messages, SCENE_SCHEMA, use_private=False)
+    return _chat_json("describe_scene", messages, schema, use_private=False)
 
 
 # --- 2. Claim extraction ----------------------------------------------------
@@ -195,10 +217,13 @@ def extract_claims(statements: list[dict], party_to_track: dict[str, str]) -> li
         f"Involved tracks: {json.dumps(involved)}\n\n"
         f"Statements:\n{json.dumps(statements, ensure_ascii=False, indent=1)}"
     )
+    schema = _pin(CLAIM_SCHEMA, ["properties", "claims", "items", "properties", "statement_id"],
+                  [s["id"] for s in statements])
+    schema = _pin(schema, ["properties", "claims", "items", "properties", "subject_track"], involved)
     out = _chat_json(
         "extract_claims",
         [{"role": "user", "content": text}],
-        CLAIM_SCHEMA,
+        schema,
         use_private=config.PRIVATE_MODE,
     )
     return out["claims"]
@@ -208,14 +233,42 @@ def extract_claims(statements: list[dict], party_to_track: dict[str, str]) -> li
 REPORT_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string"},
-        "timeline": {"type": "array", "items": {"type": "string"}},
-        "claim_findings": {"type": "array", "items": {"type": "string"}},
-        "limitations": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string", "description": "3 to 6 plain sentences for a non-expert"},
+        "limitations": {"type": "array", "items": {"type": "string"},
+                        "description": "what the footage or method cannot establish"},
     },
-    "required": ["summary", "timeline", "claim_findings", "limitations"],
+    "required": ["summary", "limitations"],
     "additionalProperties": False,
 }
+
+VERDICT_WORDS = {"consistent": "consistent with the footage", "inconsistent": "NOT consistent with the footage",
+                 "cant_tell": "cannot be checked from the footage"}
+
+
+def fact_lines(facts: dict) -> tuple[list[str], list[str]]:
+    """The report's timeline and claim findings, written by code from the
+    measured facts, so every number in them is the engine's."""
+    timeline: list[str] = []
+    for c in facts.get("signal_changes") or []:
+        if c["state"] != "unknown":
+            timeline.append(f"t = {c['t']} s: signal turns {c['state']}.")
+    for tid, b in (facts.get("braking") or {}).items():
+        if b.get("detected"):
+            timeline.append(f"t = {b['t']} s: {tid} starts braking ({b['seconds_before_impact']} s before "
+                            f"impact; peak deceleration {abs(b['peak_decel_ms2'])} m/s^2).")
+    imp = facts.get("impact")
+    if imp:
+        timeline.append(f"t = {imp['t']} s: impact between {imp['tracks'][0]} and {imp['tracks'][1]} "
+                        f"(timing uncertainty about {imp['t_sigma']} s).")
+    for tid, sp in (facts.get("speeds") or {}).items():
+        w = sp.get("just_before_impact")
+        if w:
+            timeline.append(f"{tid}: {w['kmh']} km/h (90% interval {w['lo90']} to {w['hi90']}) "
+                            f"from t = {w['t0']} to {w['t1']} s.")
+    timeline.sort(key=lambda s: float(s.split(" s")[0].split("= ")[1]) if s.startswith("t = ") else 1e9)
+    findings = [f"{c['statement_id']}: \"{c['quote']}\": {VERDICT_WORDS.get(c['verdict'], c['verdict'])}. "
+                f"{c['reason'][:1].upper() + c['reason'][1:]}." for c in facts.get("claims") or []]
+    return timeline, findings
 
 _NUM = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
 
@@ -227,9 +280,10 @@ def _allowed_numbers(facts: dict) -> set[str]:
         if isinstance(x, bool):
             return
         if isinstance(x, (int, float)):
-            for nd in (0, 1, 2, 3, 4):
-                nums.add(f"{round(float(x), nd):.{nd}f}")
-            nums.add(str(int(round(x))))
+            for v in (float(x), abs(float(x))):  # "-4.44 m/s^2" may be written as "4.44"
+                for nd in (0, 1, 2, 3, 4):
+                    nums.add(f"{round(v, nd):.{nd}f}")
+                nums.add(str(int(round(v))))
         elif isinstance(x, dict):
             for v in x.values():
                 walk(v)
@@ -247,18 +301,30 @@ def _allowed_numbers(facts: dict) -> set[str]:
 def unsupported_numbers(report: dict, facts: dict) -> list[str]:
     allowed = _allowed_numbers(facts) | {"90"}  # "90% interval" is our wording
     text = json.dumps(report, ensure_ascii=False)
+    text = re.sub(r"\^\s*2|²", "", text)  # the 2 in "m/s^2" is a unit, not a number
     return sorted({m for m in _NUM.findall(text) if m not in allowed})
 
 
 def write_report(facts: dict) -> dict:
-    """`facts` holds only engine outputs (speeds with intervals, times, verdicts)."""
+    """`facts` holds only engine outputs (speeds with intervals, times, verdicts).
+    The timeline and claim findings are written by code (`fact_lines`); Muse
+    Wonder writes the plain-language summary and the limitations, and every
+    number it uses is checked against the facts."""
+    timeline, findings = fact_lines(facts)
     base = (
-        "Write a neutral crash-reconstruction summary for a surveyor or lawyer from "
-        "these MEASURED FACTS. Rules: use only numbers that appear in the facts, "
-        "copied exactly; always give a speed with its 90% interval; never state who "
-        "is at fault or whether a law was broken; report signal states and times as "
-        "facts only; if a claim is 'cant_tell', say the footage does not show it.\n\n"
-        f"FACTS:\n{json.dumps(facts, ensure_ascii=False, indent=1)}"
+        "You are writing the summary of a crash-reconstruction report for a surveyor, "
+        "insurer or lawyer. The measured timeline and the claim findings below are "
+        "already written; summarise them in 3 to 6 plain sentences, then list the "
+        "limitations (for example: what the footage cannot show, the clock method, a "
+        "failed momentum check, a claim that cannot be checked).\n"
+        "Rules: use only numbers that appear below, copied exactly; give a speed only "
+        "with its 90% interval; never say who is at fault or whether a law was broken; "
+        "do not add events, places or road users that are not listed.\n\n"
+        "TIMELINE:\n" + "\n".join(timeline) + "\n\nCLAIM FINDINGS:\n" + "\n".join(findings) +
+        f"\n\nOTHER FACTS:\nclock method: {facts.get('clock_method')}; calibration error: "
+        f"{facts.get('calibration_rms_m')} m; momentum check: "
+        f"{(facts.get('momentum_check') or {}).get('status', 'not run')}; signal used: "
+        f"{facts.get('signal_track') or 'none'}"
     )
     messages = [{"role": "user", "content": base}]
     report = _chat_json("write_report", messages, REPORT_SCHEMA, use_private=config.PRIVATE_MODE)
@@ -274,5 +340,6 @@ def write_report(facts: dict) -> dict:
         ]
         report = _chat_json("write_report_retry", messages, REPORT_SCHEMA, use_private=config.PRIVATE_MODE)
         bad = unsupported_numbers(report, facts)
+    report["timeline"], report["claim_findings"] = timeline, findings
     report["validator"] = {"passed": not bad, "unsupported_numbers": bad}
     return report

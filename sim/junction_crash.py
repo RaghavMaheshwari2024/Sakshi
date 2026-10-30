@@ -4,7 +4,8 @@ CCTV-style camera, with exact ground truth logged every frame.
 Needs a running CARLA server (0.9.13+; tested API surface is stable from 0.9.11):
   ./CarlaUE4.sh -RenderOffScreen            # on the GPU machine or a Modal GPU box
   python sim/junction_crash.py --out cases/carla_001 --v1 50 --v2 30 --seed 1
-  (options: --cam-ahead 29 --cam-side 8 --cam-height 11 --fov 90 to move the camera)
+  (options: --town Town10HD_Opt --cam-ahead 15 --cam-side 8 --cam-height 11 --fov 90)
+Start CARLA on the map you render (switching maps can crash CARLA on laptops).
 
 Writes:
   <out>/frames/000000.png ...   raw frames
@@ -83,7 +84,7 @@ def back_off(wp, metres):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("--town", default="Town03")
+    ap.add_argument("--town", default="Town10HD_Opt", help="CARLA's default map: no map switch needed")
     ap.add_argument("--v1", type=float, default=50.0, help="vehicle A speed, km/h")
     ap.add_argument("--v2", type=float, default=30.0, help="vehicle B speed, km/h")
     ap.add_argument("--lead", type=float, default=5.0, help="seconds before impact at start")
@@ -92,7 +93,7 @@ def main():
     # Default view: like a CCTV camera facing oncoming traffic, placed beyond the
     # junction on the side away from B's approach. It sees both cars for their
     # whole approach (a camera behind A's road sees A for only ~1 s).
-    ap.add_argument("--cam-ahead", type=float, default=29.0, help="camera distance beyond the junction along A's road, m")
+    ap.add_argument("--cam-ahead", type=float, default=15.0, help="camera distance beyond the junction along A's road, m")
     ap.add_argument("--cam-side", type=float, default=8.0, help="camera offset away from B's side of the road, m")
     ap.add_argument("--cam-height", type=float, default=11.0, help="camera height above the road, m")
     ap.add_argument("--fov", type=float, default=90.0, help="horizontal field of view, degrees (CCTV is often 90+)")
@@ -129,8 +130,14 @@ def main():
         tB = s2.transform
         tA.location.z += 0.3
         tB.location.z += 0.3
-        car_a = world.spawn_actor(bp.find("vehicle.tesla.model3"), tA)
-        car_b = world.spawn_actor(bp.find("vehicle.audi.a2"), tB)
+        # Fixed colours, so statements can say "the white car" / "the blue car"
+        # and Muse Wonder has to match them to tracks from the pictures.
+        bp_a, bp_b = bp.find("vehicle.tesla.model3"), bp.find("vehicle.audi.a2")
+        for b_, rgb in ((bp_a, "245,245,245"), (bp_b, "20,60,200")):
+            if b_.has_attribute("color"):
+                b_.set_attribute("color", rgb)
+        car_a = world.spawn_actor(bp_a, tA)
+        car_b = world.spawn_actor(bp_b, tB)
         actors += [car_a, car_b]
 
         # Fixed CCTV-style camera beyond the junction, facing A's oncoming traffic,
@@ -225,8 +232,9 @@ def main():
             "t_impact": frames[impact_frame]["t"] if impact_frame is not None else None,
             "camera": {"x": cam_loc.x, "y": cam_loc.y, "z": cam_loc.z, "pitch": pitch, "yaw": yaw,
                        "fov_deg": args.fov, "width": W, "height": H},
-            "vehicles": {"A": {"length": 2 * bbA.x, "width": 2 * bbA.y},
-                         "B": {"length": 2 * bbB.x, "width": 2 * bbB.y}},
+            "vehicles": {"A": {"length": 2 * bbA.x, "width": 2 * bbA.y, "colour": "white", "model": "Tesla Model 3"},
+                         "B": {"length": 2 * bbB.x, "width": 2 * bbB.y, "colour": "blue", "model": "Audi A2"}},
+            "v1_kmh": args.v1, "v2_kmh": args.v2,
             "signal_changes": light_changes,
             "stop_line_A": [[w.transform.location.x, w.transform.location.y] for w in light_a.get_stop_waypoints()],
             "light_A_xyz": light_xyz,

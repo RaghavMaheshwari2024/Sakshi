@@ -158,9 +158,13 @@ def main():
         if proj.depth(np.array(gt["light_A_xyz"]))[0] > 1 and 0 <= lp[0] < w and 0 <= lp[1] < h:
             signal_px = [round(float(lp[0]), 1), round(float(lp[1]), 1)]
     case_input = {
+        # Statements describe the cars as a person would (by colour), so Muse Wonder
+        # must find which track each speaker drove from the pictures. s2 is in Hinglish.
         "statements": [
-            {"id": "s1", "speaker": "Driver of vehicle A", "text": "I was driving at about 30 and the light was green."},
-            {"id": "s2", "speaker": "Driver of vehicle B", "text": f"I was going slowly, maybe {round(gt.get('v2_kmh', 30))}."},
+            {"id": "s1", "speaker": "Driver of the white car",
+             "text": "I was driving the white car at about 30 and the light was green."},
+            {"id": "s2", "speaker": "Driver of the blue car",
+             "text": f"Main blue car chala raha tha, dheere, shayad {round(gt.get('v2_kmh', 30))} pe."},
         ],
         "calibration": {
             "image_pts": img_pts[visible].tolist(), "ground_pts_m": ground[visible].tolist(),

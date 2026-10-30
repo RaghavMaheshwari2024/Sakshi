@@ -58,8 +58,8 @@ class FrameClock:
         return out
 
 
-def detect_duplicates(gray_frames: list[np.ndarray], pixel_thresh: int = 12,
-                      frac_thresh: float = 2e-4) -> np.ndarray:
+def detect_duplicates(gray_frames: list[np.ndarray], pixel_thresh: int = 30,
+                      frac_thresh: float = 1e-4) -> np.ndarray:
     """A frame is a duplicate if almost no pixel changed from the previous one.
 
     A mean difference is not enough: a small moving car changes few pixels, so
@@ -73,21 +73,34 @@ def detect_duplicates(gray_frames: list[np.ndarray], pixel_thresh: int = 12,
     return dup
 
 
-def is_duplicate(prev: np.ndarray, cur: np.ndarray, pixel_thresh: int = 12,
-                 frac_thresh: float = 2e-4) -> bool:
-    """One step of `detect_duplicates`, for streaming through long clips."""
+def is_duplicate(prev: np.ndarray, cur: np.ndarray, pixel_thresh: int = 30,
+                 frac_thresh: float = 1e-4) -> bool:
+    """One step of `detect_duplicates`, for streaming through long clips.
+    Thresholds measured on a CRF-32 clip: a re-encoded duplicate changes at most
+    0.002% of pixels by more than 30 grey levels, a real frame at least 0.04%."""
     diff = np.abs(cur.astype(np.int16) - prev)
     return bool((diff > pixel_thresh).mean() < frac_thresh)
 
 
-def overlay_changed(prev: np.ndarray, cur: np.ndarray, thresh: float = 8.0) -> bool:
-    return bool(np.abs(cur.astype(np.int16) - prev.astype(np.int16)).mean() > thresh)
+def overlay_changed(prev: np.ndarray, cur: np.ndarray, level: int = 60,
+                    min_frac: float = 0.0015, min_px: int = 15) -> bool:
+    """Did the clock text change? Count pixels that changed strongly: when one
+    digit changes only ~1% of the clock area changes, so an average change is
+    far too small to see it (it is ~2 grey levels on a compressed clip), while
+    the count of strongly changed pixels jumps from <20 to 50+."""
+    d = np.abs(cur.astype(np.int16) - prev.astype(np.int16))
+    return int((d > level).sum()) >= max(min_px, min_frac * d.size)
 
 
-def detect_ticks(overlay_crops: list[np.ndarray], thresh: float = 8.0) -> list[int]:
-    """Frames where the clock overlay changed: candidates to read with Muse Spark."""
-    return [i for i in range(1, len(overlay_crops))
-            if overlay_changed(overlay_crops[i - 1], overlay_crops[i], thresh)]
+def detect_ticks(overlay_crops: list[np.ndarray], min_gap: int = 3) -> list[int]:
+    """Frames where the clock overlay changed: candidates to read with Muse Spark.
+    A change spread over consecutive frames (codec noise) counts once, at its
+    first frame: the first frame showing the new second."""
+    out: list[int] = []
+    for i in range(1, len(overlay_crops)):
+        if overlay_changed(overlay_crops[i - 1], overlay_crops[i]) and (not out or i - out[-1] >= min_gap):
+            out.append(i)
+    return out
 
 
 def _check_ticks(ticks):
@@ -170,6 +183,7 @@ def refine_with_motion(n: int, ticks: list[tuple[int, float]], nominal_fps: floa
     g = np.ones(n)  # g[j]: sensor frames between frame j-1 and j; g[0] unused
     ratio = np.full(n, np.nan)  # real-valued motion ratio behind each gap
     refined_segments = 0
+    unknown: list[tuple[np.ndarray, int]] = []  # seconds whose drops could not be located
     for (ia, sa), (ib, sb) in zip(ticks[:-1], ticks[1:]):
         js = np.arange(ia + 1, ib + 1)
         best = None
@@ -188,6 +202,8 @@ def refine_with_motion(n: int, ticks: list[tuple[int, float]], nominal_fps: floa
         M0 = int(round(nominal_fps * (sb - sa)))
         if best is None or M0 < len(js):
             g[js] = M0 / len(js) if M0 >= len(js) else 1.0  # no usable motion: even spacing
+            if M0 > len(js):
+                unknown.append((js, M0 - len(js)))  # drops in this second, place unknown
             continue
         options = []
         for M in range(max(len(js), M0 - slack), M0 + slack + 1):
@@ -195,12 +211,15 @@ def refine_with_motion(n: int, ticks: list[tuple[int, float]], nominal_fps: floa
             options.append((cost + 0.02 * abs(M - M0), gg, rr))
         _, g[js], ratio[js] = min(options, key=lambda o: o[0])
         refined_segments += 1
-    if refined_segments == 0:
-        return base
-    # Outside the first and last ticks there is no frame-count constraint, but
-    # motion still shows large gaps: estimate them with the per-frame step of
-    # the neighbouring second.
+    # Outside the first and last ticks there is no frame-count constraint: use
+    # the drop rate seen between the ticks (so times there are not biased), and
+    # motion where it shows a clear jump.
     (ia, _), (ib, _) = ticks[0], ticks[-1]
+    inside = np.arange(ia + 1, ib + 1)
+    rate = float(g[inside].sum() / max(len(inside), 1)) if len(inside) else 1.0
+    rate = max(rate, 1.0)
+    outside = np.r_[np.arange(1, ia + 1), np.arange(ib + 1, n)].astype(int)
+    g[outside] = rate
     for js, ref in ((np.arange(1, ia + 1), np.arange(ia + 1, ticks[1][0] + 1)),
                     (np.arange(ib + 1, n), np.arange(ticks[-2][0] + 1, ib + 1))):
         if len(js) == 0:
@@ -216,7 +235,10 @@ def refine_with_motion(n: int, ticks: list[tuple[int, float]], nominal_fps: floa
             # noise); without a count constraint, noise could otherwise turn a
             # normal step into a fake "dropped frame".
             clear = (r_out >= 1.6) & (d[ok] - u > 3 * e[ok])
-            g[js[ok]] = np.where(clear, np.round(r_out), 1)
+            # A step close to one frame's motion, with that motion well above the
+            # noise, is a normal step; anything else stays at the average rate.
+            single = (r_out < 1.3) & (u > 4 * e[ok])
+            g[js[ok]] = np.where(clear, np.round(r_out), np.where(single, 1.0, rate))
             break
     i0, s0 = ticks[0]
 
@@ -233,6 +255,13 @@ def refine_with_motion(n: int, ticks: list[tuple[int, float]], nominal_fps: floa
 
     def sampler(rng):
         gs = g.copy()
+        # Seconds where motion could not place the drops: place them at random
+        # (the second's total stays fixed by its two clock ticks).
+        for js, extra in unknown:
+            gs[js] = 1 + rng.multinomial(extra, np.full(len(js), 1 / len(js)))
+        # Before the first and after the last tick: random drops at the seen rate.
+        if rate > 1 and len(outside):
+            gs[outside] = np.where(np.isclose(g[outside], rate), 1 + rng.poisson(rate - 1, len(outside)), g[outside])
         for j in np.flatnonzero(rng.random(n) < amb):
             k = j + (1 if ratio[j] > g[j] else -1)
             if 1 <= k < n:
@@ -245,7 +274,8 @@ def refine_with_motion(n: int, ticks: list[tuple[int, float]], nominal_fps: floa
         return times(gs) - t0 + rng.uniform(-0.5, 0.5) / nominal_fps + rng.normal(0, 0.002, n)
 
     sigma = np.full(n, 0.29 / nominal_fps)
-    return FrameClock(t - t0, sigma, "clock_ticks+motion", duplicate, sampler, gaps=g)
+    method = "clock_ticks+motion" if refined_segments else "clock_ticks"
+    return FrameClock(t - t0, sigma, method, duplicate, sampler, gaps=g)
 
 
 def from_pts(pts_s: np.ndarray, duplicate: np.ndarray | None = None) -> FrameClock:

@@ -71,6 +71,8 @@ Every call is cached (`cache/`) and logged (`logs/model_usage.jsonl`);
 
 ## Current results (synthetic case, 12% of frames dropped + a 5-frame burst)
 
+| Clock method | Speed error, last 2 s before impact | True speed inside 90% interval |
+| --- | --- | --- |
 | Nominal frame rate | 12.8–22.0% | 20–22% |
 | Clock ticks only | 5.0–8.6% | 68–74% |
 | **Drop-aware (ticks + motion)** | **1.6–2.1%** | **87–100%** |
@@ -88,6 +90,26 @@ Known limits:
   the stop line (`calibration.signal_track`); otherwise signal claims are "can't tell".
 
 These are synthetic numbers. The pitch must quote CARLA (`sim/`) and real-camera results.
+
+### CARLA, first run (Town10HD_Opt, 50 vs 30 km/h side impact, 960x540, CRF 32, 23 of 200 frames dropped)
+
+Real SAM 3.1 tracks from the live run; clock reads emulated from ground truth.
+
+| | Car A (50 km/h, driving toward the camera) | Car B (30 km/h, crossing) |
+| --- | --- | --- |
+| Speed error, last 2 s | 5.7% | 6.9% |
+| True speed inside 90% interval | 69% | 62% (84% over the whole approach) |
+
+Impact 0.23 s early; both speed claims judged correctly; momentum check consistent.
+What limits it (measured against ground truth):
+- Car B's contact point is exact (30.0 km/h with true frame times): its error is
+  frame timing, because cars this small hide single dropped frames from the
+  motion test, so drops are placed at random within each clock second.
+- Car A's lowest mask pixel slides along the car as it approaches (front tyres far
+  away, bumper up close), reading 4-11% fast even with true times. Next step:
+  correct the contact point with the camera geometry recovered from calibration.
+- At CARLA's Low quality the signal lamps are not lit, so signal reading cannot be
+  tested here: the claim is answered "can't tell".
 
 ## CARLA ground truth (`sim/`)
 

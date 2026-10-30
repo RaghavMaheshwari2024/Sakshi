@@ -3,7 +3,8 @@
 Endpoints the UI uses:
   POST /cases                      multipart: video, statements_json, audio files
   GET  /cases/{id}/frame/{i}.jpg   a frame, for the calibration screen
-  POST /cases/{id}/calibration     JSON: image_pts, ground_pts_m, stop_line_m, clock_box_px
+  POST /cases/{id}/calibration     JSON: image_pts, ground_pts_m, stop_line_m, clock_box_px,
+                                   signal_light_px (the clicked signal head that governs the stop line)
   POST /cases/{id}/party           JSON: {"s1": "car-0", ...} (user confirms who drove what)
   GET  /cases/{id}/run             server-sent events: one per pipeline stage, then "done"
   GET  /cases/{id}/case.json       the result

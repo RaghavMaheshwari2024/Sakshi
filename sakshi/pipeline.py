@@ -65,7 +65,8 @@ def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, pro
         prev_g = g
         if clock_box:
             o = cv2.cvtColor(crop(f, clock_box, 0), cv2.COLOR_BGR2GRAY)
-            if prev_o is not None and clock_mod.overlay_changed(prev_o, o):
+            if prev_o is not None and clock_mod.overlay_changed(prev_o, o) and \
+                    (not cand_all or i - cand_all[-1] >= 3):
                 cand_all.append(i)
             prev_o = o
     dup = np.zeros(n, bool)
@@ -193,8 +194,10 @@ def split_at_impact(results, tracks, calib, clk, mc, impact) -> dict:
 def _light_at(tracks: list[dict], px, max_dist_px: float = 40.0) -> str | None:
     """The traffic-light track whose box is nearest the clicked pixel."""
     best, best_d = None, max_dist_px
-    for t in tracks:
-        if t["concept"] != "traffic light" or not t["frames"]:
+    lights = [t for t in tracks if t["concept"] == "traffic light" and t["frames"]]
+    longest = max((len(t["frames"]) for t in lights), default=0)
+    for t in lights:
+        if len(t["frames"]) < 0.5 * longest:  # a flicker of a track cannot carry a timeline
             continue
         b = np.median([f["box"] for f in t["frames"]], axis=0)
         dx = max(b[0] - px[0], 0, px[0] - b[2])  # 0 when the click is inside the box
@@ -299,7 +302,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         from .meta import wonder
 
         scene = wonder.describe_scene(
-            labelled_keyframes(video, tracks, info.n, impact["i"] if impact else None), statements
+            labelled_keyframes(video, tracks, info.n, impact["i"] if impact else None), statements,
+            [t["id"] for t in tracks],
         )
         progress("scene", {"suggested": scene["party_to_track"]})
         if not party:  # use the suggestion, but mark it as unconfirmed

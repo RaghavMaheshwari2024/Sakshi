@@ -132,3 +132,12 @@ def test_signal_choice_with_several_lights():
 def test_signal_run_not_joined_across_a_long_gap():
     st = [(0.0, "green")] + [(0.04 * k, "unclear") for k in range(1, 91)] + [(3.68, "green"), (3.72, "green")]
     assert signals.timeline(st) == []  # never 3 clear frames in a row: nothing is known
+
+def test_signal_chosen_by_clicking_the_light():
+    tracks = [{"id": "traffic_light-0", "concept": "traffic light", "frames": [{"i": 0, "box": [100, 50, 120, 100]}]},
+              {"id": "traffic_light-1", "concept": "traffic light", "frames": [{"i": 0, "box": [600, 40, 620, 90]}]}]
+    sig = {"traffic_light-0": [{"t": 0, "state": "red"}], "traffic_light-1": [{"t": 0, "state": "green"}]}
+    changes, chosen, _ = choose_signal(sig, None, tracks, [612, 70])
+    assert chosen == "traffic_light-1"
+    changes, chosen, note = choose_signal(sig, None, tracks, [350, 300])  # click far from any light
+    assert chosen is None and "choose" in note

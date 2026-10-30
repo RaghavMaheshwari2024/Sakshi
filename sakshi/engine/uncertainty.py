@@ -92,7 +92,12 @@ def _run_once(H, frames, px, t, jitter_px, rng=None, bias_px=0.0, jerk_q=30.0):
     p = px.copy()
     ok = ~np.isnan(p).any(1)
     if rng is not None:
-        p[ok, 1] -= bias_px  # constant per-track bias toward the camera
+        # Where on the mask the "lowest pixel" sits drifts as the view of the
+        # vehicle changes (front tyres far away, bumper up close): model it as an
+        # offset toward the camera that changes linearly over the track.
+        b = np.atleast_1d(bias_px)
+        ramp = np.linspace(b[0], b[-1], len(p))
+        p[ok, 1] -= ramp[ok]
         p[ok] += rng.normal(0, jitter_px, size=(ok.sum(), 2))
     z = np.full_like(p, np.nan)
     z[ok] = hg.img_to_ground(H, p[ok])
@@ -150,7 +155,7 @@ def measure(tracks: list[dict], calib: hg.Calibration, clock: FrameClock,
             continue
         t_all = clock.sample(rng)  # correlated timing error, per the clock's method
         for tid, (fr, px) in prepared.items():
-            bias = rng.uniform(0, cfg.contact_bias_px)
+            bias = rng.uniform(0, cfg.contact_bias_px, 2)  # offset at the start and end of the track
             # Model uncertainty: how abruptly vehicles may change acceleration.
             q = float(np.exp(rng.uniform(np.log(cfg.jerk_q_range[0]), np.log(cfg.jerk_q_range[1]))))
             try:

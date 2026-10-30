@@ -24,6 +24,11 @@ def classify_lamp(crop_bgr: np.ndarray) -> tuple[str, float]:
     total = int(lit.sum())
     if total < max(4, 0.01 * crop_bgr.shape[0] * crop_bgr.shape[1]):
         return "off", 0.5
+    # A lit lamp is one of three on the head: a small part of the box. When
+    # "bright colour" covers most of it, that is paint (yellow housings are
+    # common in the US and in simulators), not light: let Spark decide.
+    if lit.mean() > 0.45:
+        return "unclear", 0.0
     counts: dict[str, int] = {}
     for name, ranges in HUE.items():
         m = np.zeros_like(lit)
