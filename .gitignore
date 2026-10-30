@@ -1,4 +1,20 @@
+# Python
 .venv/
-.env
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Secrets
+.env
+
+# Runtime data (sakshi/config.py: CACHE_DIR, LOG_DIR, CASES_DIR)
+cache/
+logs/
+# Uploaded and generated cases; keep the folder itself
+cases/*
+!cases/.gitkeep
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

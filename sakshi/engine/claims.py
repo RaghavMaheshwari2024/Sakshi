@@ -1,0 +1,104 @@
+"""Check each extracted claim against the engine's measurements.
+
+Verdicts: consistent / inconsistent / cant_tell. A claimed speed is treated as
+approximate (people round), so it is the claimed range +/-10% that is compared
+with our 90% interval. 'inconsistent' requires the two ranges not to overlap.
+"""
+
+from __future__ import annotations
+
+from . import events, signals
+from .uncertainty import TrackResult
+
+SPEED_TOLERANCE = 0.10
+
+
+def _speed_window(claim: dict, res: TrackResult, impact_t: float | None, cross_t: float | None):
+    when = claim["when"]
+    if when == "at_stop_line" and cross_t is not None:
+        return events.window_speed(res, cross_t - 0.2, cross_t + 0.2)
+    if impact_t is None:
+        return None
+    if when == "at_impact":
+        return events.window_speed(res, impact_t - 0.25, impact_t - 0.05)
+    # just_before_impact / unspecified: the second before contact
+    return events.window_speed(res, impact_t - 1.2, impact_t - 0.2)
+
+
+def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
+    """ctx: {"impact_t", "signal_changes", "stop_line", "braking": {track: {...}}}"""
+    out = {**claim, "verdict": "cant_tell", "measured": None, "reason": ""}
+    res = results.get(claim["subject_track"])
+    if res is None:
+        out["reason"] = "the footage does not track this road user"
+        return out
+    q = claim["quantity"]
+    cross_t = events.stop_line_crossing(res, ctx["stop_line"]) if ctx.get("stop_line") else None
+
+    if q == "speed_kmh":
+        if claim["value_number"] is None:
+            out["reason"] = "no speed stated"
+            return out
+        w = _speed_window(claim, res, ctx.get("impact_t"), cross_t)
+        if w is None:
+            out["reason"] = "no measurement at the time the claim refers to"
+            return out
+        v = float(claim["value_number"])
+        lo_c, hi_c = v * (1 - SPEED_TOLERANCE), v * (1 + SPEED_TOLERANCE)
+        out["measured"] = w
+        if hi_c < w["lo90"] or lo_c > w["hi90"]:
+            out["verdict"] = "inconsistent"
+            out["reason"] = (
+                f"claimed about {v:g} km/h; measured {w['kmh']} km/h "
+                f"(90% interval {w['lo90']} to {w['hi90']})"
+            )
+        else:
+            out["verdict"] = "consistent"
+            out["reason"] = f"claimed {v:g} km/h lies within the measured range"
+        return out
+
+    if q == "signal_state_at_stop_line":
+        changes = ctx.get("signal_changes") or []
+        if cross_t is None or not changes:
+            out["reason"] = "stop line or signal not visible/calibrated"
+            return out
+        actual = signals.state_at(changes, cross_t)
+        out["measured"] = {"stop_line_t": round(cross_t, 3), "signal": actual}
+        if actual is None:
+            out["reason"] = "signal state unknown at the crossing time"
+            return out
+        claimed = (claim.get("value_text") or "").lower()
+        out["verdict"] = "consistent" if claimed == actual else "inconsistent"
+        last_change = max((c for c in changes if c["t"] <= cross_t), key=lambda c: c["t"])
+        out["reason"] = (
+            f"signal was {actual} at the stop-line crossing; it had changed to {actual} "
+            f"{cross_t - last_change['t']:.1f} s earlier"
+        )
+        return out
+
+    if q in ("braked_before_impact", "stopped_before_impact"):
+        b = (ctx.get("braking") or {}).get(claim["subject_track"])
+        if b is None:
+            out["reason"] = "no impact detected for this road user"
+            return out
+        claimed_yes = (claim.get("value_text") or "yes").lower() in ("yes", "true")
+        if q == "braked_before_impact":
+            out["measured"] = b
+            out["verdict"] = "consistent" if claimed_yes == b["detected"] else "inconsistent"
+            out["reason"] = (
+                f"braking detected {b['seconds_before_impact']} s before impact"
+                if b["detected"] else "no sustained braking detected before impact"
+            )
+        else:
+            if ctx.get("impact_t") is None:
+                out["reason"] = "no impact detected"
+                return out
+            w = events.window_speed(res, ctx["impact_t"] - 0.6, ctx["impact_t"] - 0.1)
+            out["measured"] = w
+            stopped = w is not None and w["hi90"] < 3.0
+            out["verdict"] = "consistent" if claimed_yes == stopped else "inconsistent"
+            out["reason"] = "stationary before impact" if stopped else "moving just before impact"
+        return out
+
+    out["reason"] = "not a measurable quantity"
+    return out
