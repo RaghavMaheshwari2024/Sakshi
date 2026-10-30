@@ -141,7 +141,10 @@ CLAIM_SCHEMA = {
                             "other",
                         ],
                     },
-                    "value_number": {"type": ["number", "null"]},
+                    "value_number": {
+                        "type": ["number", "null"],
+                        "description": "any stated number goes here, e.g. 30 for 'I was doing 30'",
+                    },
                     "value_text": {
                         "type": ["string", "null"],
                         "description": "red/amber/green, or yes/no, when the value is not a number",
@@ -149,6 +152,11 @@ CLAIM_SCHEMA = {
                     "when": {
                         "type": "string",
                         "enum": ["at_impact", "just_before_impact", "at_stop_line", "unspecified"],
+                        "description": (
+                            "at_impact only if the speaker refers to the moment of contact; "
+                            "at_stop_line for the signal or for speed at the junction entry; "
+                            "unspecified for a general speed like 'I was doing 30'"
+                        ),
                     },
                 },
                 "required": [
@@ -179,7 +187,10 @@ def extract_claims(statements: list[dict], party_to_track: dict[str, str]) -> li
         "include claims about speed, the traffic signal, braking or stopping. Keep the "
         "speaker's exact words in `quote`. Resolve 'I'/'me' to the speaker's track and "
         "'the other vehicle' to the other involved track. Use null when no value is "
-        "stated. Statements may be in Hindi or English; quote them as given.\n\n"
+        "stated. A signal claim is about the stop line, so its `when` is at_stop_line. "
+        "A general speed ('I was doing 30') is unspecified; use at_impact only when "
+        "the speaker says 'when we hit' or similar. Statements may be in Hindi or "
+        "English; quote them as given.\n\n"
         f"Speaker's own track per statement: {json.dumps(party_to_track)}\n"
         f"Involved tracks: {json.dumps(involved)}\n\n"
         f"Statements:\n{json.dumps(statements, ensure_ascii=False, indent=1)}"

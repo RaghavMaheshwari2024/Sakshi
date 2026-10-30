@@ -6,6 +6,7 @@ with our 90% interval. 'inconsistent' requires the two ranges not to overlap.
 """
 
 from __future__ import annotations
+import re
 
 from . import events, signals
 from .uncertainty import TrackResult
@@ -24,6 +25,17 @@ def _speed_window(claim: dict, res: TrackResult, impact_t: float | None, cross_t
     # just_before_impact / unspecified: the second before contact
     return events.window_speed(res, impact_t - 1.2, impact_t - 0.2)
 
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _claimed_number(claim: dict) -> float | None:
+    """The stated number, from value_number or, if the model put it there, value_text
+    ("30", "30 km/h"). Vague words like "very fast" give None."""
+    if claim.get("value_number") is not None:
+        return float(claim["value_number"])
+    m = _NUMBER.search(claim.get("value_text") or "")
+    return float(m.group()) if m else None
+
 
 def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
     """ctx: {"impact_t", "signal_changes", "stop_line", "braking": {track: {...}}}"""
@@ -36,14 +48,15 @@ def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
     cross_t = events.stop_line_crossing(res, ctx["stop_line"]) if ctx.get("stop_line") else None
 
     if q == "speed_kmh":
-        if claim["value_number"] is None:
+        v = _claimed_number(claim)
+        if v is None:
             out["reason"] = "no speed stated"
             return out
+        out["value_number"] = v
         w = _speed_window(claim, res, ctx.get("impact_t"), cross_t)
         if w is None:
             out["reason"] = "no measurement at the time the claim refers to"
             return out
-        v = float(claim["value_number"])
         lo_c, hi_c = v * (1 - SPEED_TOLERANCE), v * (1 + SPEED_TOLERANCE)
         out["measured"] = w
         if hi_c < w["lo90"] or lo_c > w["hi90"]:

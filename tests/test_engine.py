@@ -87,6 +87,9 @@ def test_claim_speed_verdicts():
     assert claims.evaluate({**base, "value_number": 30}, res, ctx)["verdict"] == "inconsistent"
     assert claims.evaluate({**base, "value_number": 50}, res, ctx)["verdict"] == "consistent"
     assert claims.evaluate({**base, "subject_track": "car-9", "value_number": 50}, res, ctx)["verdict"] == "cant_tell"
+    # The model sometimes puts the number in value_text.
+    assert claims.evaluate({**base, "value_number": None, "value_text": "30"}, res, ctx)["verdict"] == "inconsistent"
+    assert claims.evaluate({**base, "value_number": None, "value_text": "very fast"}, res, ctx)["verdict"] == "cant_tell"
 
 
 def test_report_validator_rejects_invented_numbers():
