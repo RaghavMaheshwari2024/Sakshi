@@ -57,7 +57,11 @@ def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
             out["reason"] = "no speed stated"
             return out
         out["value_number"] = v
-        w = _speed_window(claim, res, ctx.get("impact_t"), cross_t)
+        ref_t = ctx.get("impact_t")
+        near_miss = ref_t is None and ctx.get("closest_t") is not None
+        if near_miss:  # no impact: judge the speed around the closest approach
+            ref_t = ctx["closest_t"]
+        w = _speed_window(claim, res, ref_t, cross_t)
         if w is None:
             out["reason"] = "no measurement at the time the claim refers to"
             return out
@@ -72,6 +76,8 @@ def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
         else:
             out["verdict"] = "consistent"
             out["reason"] = f"claimed {v:g} km/h lies within the measured range"
+        if near_miss and claim.get("when") != "at_stop_line":
+            out["reason"] += " (no impact: measured around the closest approach)"
         return out
 
     if q == "signal_state_at_stop_line":

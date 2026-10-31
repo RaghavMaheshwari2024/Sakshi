@@ -1,7 +1,8 @@
 """Sakshi backend. Run: uvicorn api.app:app --reload
 
 Endpoints the UI uses:
-  POST /cases                      multipart: video, statements_json, audio files
+  GET  /cases                      case list for the home screen (id, status, camera_mode)
+  POST /cases                      multipart: video, statements_json, audio files, camera_mode
   GET  /cases/{id}/frame/{i}.jpg   a frame, for the calibration screen
   POST /cases/{id}/calibration     JSON: image_pts, ground_pts_m, stop_line_m, clock_box_px,
                                    signal_light_px (the clicked signal head that governs the stop line)
@@ -60,9 +61,27 @@ def _inp(d: Path) -> dict:
     return json.loads((d / "case_input.json").read_text())
 
 
+@app.get("/cases")
+def list_cases():
+    """Cases for the home screen, newest first: id, status, camera mode, frame count."""
+    out = []
+    if CASES_DIR.exists():
+        for d in CASES_DIR.iterdir():
+            if not (d / "case_input.json").exists():
+                continue
+            inp = _inp(d)
+            done = (d / "case.json").exists()
+            status = "done" if done else ("ready" if inp.get("calibration") else "calibrate")
+            out.append({"id": d.name, "status": status, "camera_mode": inp.get("camera_mode", "fixed"),
+                        "statements": len(inp.get("statements", [])),
+                        "updated": round((d / ("case.json" if done else "case_input.json")).stat().st_mtime),
+                        "thumbnail": f"/cases/{d.name}/frame/0.jpg"})
+    return sorted(out, key=lambda c: -c["updated"])
+
+
 @app.post("/cases")
 async def create_case(video: UploadFile = File(...), statements_json: str = Form("[]"),
-                      languages: str = Form('["Hindi", "English"]'),
+                      languages: str = Form('["Hindi", "English"]'), camera_mode: str = Form("fixed"),
                       audio: list[UploadFile] | None = File(None)):
     case_id = uuid.uuid4().hex[:10]
     d = CASES_DIR / case_id
@@ -74,8 +93,10 @@ async def create_case(video: UploadFile = File(...), statements_json: str = Form
         if not f.filename:
             raise HTTPException(400, "audio file is missing a filename")
         (d / "audio" / Path(f.filename).name).write_bytes(await f.read())
+    if camera_mode not in ("fixed", "dashcam"):
+        raise HTTPException(400, "camera_mode must be 'fixed' or 'dashcam'")
     inp = {"statements": statements, "calibration": None, "party_to_track": None,
-           "languages": json.loads(languages)}
+           "languages": json.loads(languages), "camera_mode": camera_mode}
     (d / "case_input.json").write_text(json.dumps(inp, indent=1))
     return {"id": case_id}
 

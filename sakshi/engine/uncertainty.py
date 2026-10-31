@@ -88,7 +88,7 @@ def _track_arrays(track: dict, clock: FrameClock):
     return frames, px
 
 
-def _run_once(H, frames, px, t, jitter_px, rng=None, bias_px=0.0, jerk_q=30.0):
+def _run_once(H, frames, px, t, jitter_px, rng=None, bias_px: float | np.ndarray = 0.0, jerk_q=30.0):
     p = px.copy()
     ok = ~np.isnan(p).any(1)
     if rng is not None:

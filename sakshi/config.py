@@ -49,5 +49,10 @@ SAM_CONCEPTS = [
     if c.strip()
 ]
 
+# Where a vehicle meets the road: "lowest" = lowest pixel of its mask;
+# "wheels" = also track the concept "wheel" with SAM 3.1 and follow one tyre's
+# contact point (see sakshi/engine/contact.py). A case may override it.
+CONTACT_MODE = os.environ.get("SAKSHI_CONTACT", "lowest")
+
 for d in (CACHE_DIR, CASES_DIR, LOG_DIR):
     d.mkdir(parents=True, exist_ok=True)

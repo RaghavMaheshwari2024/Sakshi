@@ -58,6 +58,104 @@ def _spread(points: np.ndarray, k: int) -> list[int]:
     return chosen
 
 
+def _frames_from_video(video: Path, out_dir: Path) -> list[Path]:
+    if not video.exists():
+        raise SystemExit(f"No frames/ and no {video.name}: render the scenario first.")
+    cap, paths, k = cv2.VideoCapture(str(video)), [], 0
+    while True:
+        ok, img = cap.read()
+        if not ok:
+            break
+        p = out_dir / f"{k:06d}.png"
+        cv2.imwrite(str(p), img)
+        paths.append(p)
+        k += 1
+    cap.release()
+    return paths
+
+
+def ref_time(gt) -> float:
+    """The moment claims refer to: the impact, or for a near miss the closest approach."""
+    if gt.get("t_impact") is not None:
+        return gt["t_impact"]
+    best = min(gt["frames"], key=lambda r: np.hypot(r["A"]["x"] - r["B"]["x"], r["A"]["y"] - r["B"]["y"]))
+    return best["t"]
+
+
+def _true_speed(gt, name, t0, t1) -> float:
+    v = [r[f"{name}_speed_kmh"] for r in gt["frames"] if t0 <= r["t"] <= t1]
+    return float(np.mean(v))
+
+
+def _speed_verdict(claimed: float, true: float) -> str:
+    """What a correct checker should say. Claims carry +-10%; a small margin
+    either side is genuinely borderline, so either verdict is fine there."""
+    off = abs(claimed - true)
+    if off <= 0.10 * claimed:
+        return "consistent"
+    return "inconsistent" if off > 0.10 * claimed + 3.0 else "either"
+
+
+def _light_at_stop_line(gt):
+    """Signal state when A's FRONT crosses its stop line (what Sakshi measures)."""
+    if not gt.get("stop_line_A") or not gt.get("signal_changes"):
+        return None
+    f0, f1 = gt["frames"][0]["A"], gt["frames"][min(len(gt["frames"]) - 1, 25)]["A"]
+    u = np.array([f1["x"] - f0["x"], f1["y"] - f0["y"]])
+    u /= np.linalg.norm(u) + 1e-9
+    p0 = np.array(gt["stop_line_A"][0])
+    half = gt["vehicles"]["A"]["length"] / 2
+    for r in gt["frames"]:
+        front = np.array([r["A"]["x"], r["A"]["y"]]) + half * u
+        if (front - p0) @ u >= 0:
+            state = None
+            for c in gt["signal_changes"]:
+                if c["t"] <= r["t"]:
+                    state = c["state"]
+            return state
+    return None
+
+
+def _statements(gt, args):
+    """Two statements in the voices of the drivers, and what a correct checker
+    should say about each claim in them (kept in gt.json only)."""
+    kind = gt.get("kind", "t_bone")
+    t_ref = ref_time(gt)
+    win = (t_ref - 1.2, t_ref - 0.2)
+    braked = bool(gt.get("a_braking"))
+    vb = gt["vehicles"]["B"]
+    b_desc = f"{vb['colour']} {vb.get('word', 'car')}" if vb.get("colour") else vb.get("word", "car")
+    v1, v2 = _true_speed(gt, "A", *win), _true_speed(gt, "B", *win)
+    c1 = args.claim_a if args.claim_a is not None else max(10, 5 * round(v1 * 0.6 / 5))
+    c2 = max(5, round(v2))
+    s1 = f"I was driving the white car at about {c1:g}"
+    exp = [{"statement_id": "s1", "quantity": "speed_kmh", "subject": "A", "claimed": c1,
+            "true": round(v1, 1), "expected": _speed_verdict(c1, v1)}]
+    if kind != "rear_end":
+        s1 += " and the light was green"
+        state = _light_at_stop_line(gt)
+        if state is not None:
+            exp.append({"statement_id": "s1", "quantity": "signal_state_at_stop_line", "subject": "A",
+                        "claimed": "green", "true": state,
+                        "expected": "consistent" if state == "green" else "inconsistent",
+                        "acceptable": ["cant_tell"]})  # lamps are not lit at CARLA's Low quality
+    s1 += "."
+    if braked and kind != "near_miss":
+        s1 += " I braked hard before we hit."
+        exp.append({"statement_id": "s1", "quantity": "braked_before_impact", "subject": "A", "claimed": "yes",
+                    "true": "yes", "expected": "consistent"})
+    s2 = f"Main {b_desc} chala raha tha, dheere, shayad {c2} pe."
+    exp.append({"statement_id": "s2", "quantity": "speed_kmh", "subject": "B", "claimed": c2,
+                "true": round(v2, 1), "expected": _speed_verdict(c2, v2)})
+    if kind != "near_miss":
+        s2 += " White car ne brake bilkul nahi lagaya."  # "the white car did not brake at all"
+        exp.append({"statement_id": "s2", "quantity": "braked_before_impact", "subject": "A", "claimed": "no",
+                    "true": "yes" if braked else "no", "expected": "inconsistent" if braked else "consistent"})
+    statements = [{"id": "s1", "speaker": "Driver of the white car", "text": s1},
+                  {"id": "s2", "speaker": f"Driver of the {b_desc}", "text": s2}]
+    return statements, exp
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("case_dir")
@@ -67,12 +165,17 @@ def main():
     ap.add_argument("--scale", type=float, default=0.75, help="downscale, like a cheap DVR")
     ap.add_argument("--click-noise-px", type=float, default=2.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--no-clock", action="store_true", help="no burned-in clock (many phone and some CCTV clips)")
+    ap.add_argument("--claim-a", type=float, default=None,
+                    help="speed the white car's driver claims, km/h (default: an understatement)")
     args = ap.parse_args()
     d = Path(args.case_dir)
     rng = np.random.default_rng(args.seed)
     gt = json.loads((d / ("gt_clean.json" if (d / "gt_clean.json").exists() else "gt.json")).read_text())
     shutil.copy(d / "gt.json", d / "gt_clean.json") if not (d / "gt_clean.json").exists() else None
     frames = sorted((d / "frames").glob("*.png"))
+    if not frames:  # the PNGs were deleted to save space: decode the clean render instead
+        frames = _frames_from_video(d / "input_clean.mp4", Path(tempfile.mkdtemp(prefix="sakshi_frames_")))
 
     keep = rng.random(len(frames)) > args.drop
     keep[0] = keep[-1] = True
@@ -91,7 +194,8 @@ def main():
             t = gt["frames"][src_i]["t"]
             sec = base_clock + int(math.floor(t))
             txt = f"30-10-2026 {sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
-            cv2.putText(img, txt, (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            if not args.no_clock:
+                cv2.putText(img, txt, (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
             for _ in range(reps):
                 cv2.imwrite(f"{tmp}/{k:06d}.png", img)
                 row = dict(gt["frames"][src_i])
@@ -105,8 +209,10 @@ def main():
                         f"{tmp}/%06d.png", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf",
                         str(args.crf), str(d / "input.mp4")], check=True)
 
-    gt_out = {**gt, "frames": out_rows, "true_ticks": ticks,
-              "degradation": {"drop": args.drop, "dup": args.dup, "crf": args.crf, "scale": args.scale}}
+    statements, expected = _statements(gt, args)
+    gt_out = {**gt, "frames": out_rows, "true_ticks": ticks, "expected_claims": expected,
+              "degradation": {"drop": args.drop, "dup": args.dup, "crf": args.crf, "scale": args.scale,
+                              "clock": not args.no_clock}}
     (d / "gt.json").write_text(json.dumps(gt_out, indent=1))
 
     # Calibration from the true camera: 12 road points spread over the parts of
@@ -115,8 +221,8 @@ def main():
     proj = project_fn(gt["camera"])
     h, w = int(gt["camera"]["height"] * args.scale), int(gt["camera"]["width"] * args.scale)
     f0, fi = gt["frames"][0], gt["frames"][min(len(gt["frames"]) - 1, int(gt["fps"] * 4))]
-    imp = gt["frames"][-1] if gt.get("t_impact") is None else min(
-        gt["frames"], key=lambda r: abs(r["t"] - gt["t_impact"]))
+    t_ref = ref_time(gt)
+    imp = min(gt["frames"], key=lambda r: abs(r["t"] - t_ref))
     z = np.mean([f0["A"]["z"], f0["B"]["z"]])
     cand = []
     for name in ("A", "B"):
@@ -158,18 +264,15 @@ def main():
         if proj.depth(np.array(gt["light_A_xyz"]))[0] > 1 and 0 <= lp[0] < w and 0 <= lp[1] < h:
             signal_px = [round(float(lp[0]), 1), round(float(lp[1]), 1)]
     case_input = {
-        # Statements describe the cars as a person would (by colour), so Muse Wonder
-        # must find which track each speaker drove from the pictures. s2 is in Hinglish.
-        "statements": [
-            {"id": "s1", "speaker": "Driver of the white car",
-             "text": "I was driving the white car at about 30 and the light was green."},
-            {"id": "s2", "speaker": "Driver of the blue car",
-             "text": f"Main blue car chala raha tha, dheere, shayad {round(gt.get('v2_kmh', 30))} pe."},
-        ],
+        # Statements describe the vehicles as a person would (colour, type), so
+        # Muse Wonder must find which track each speaker drove from the pictures.
+        "statements": statements,
+        "camera_mode": "fixed",
         "calibration": {
             "image_pts": img_pts[visible].tolist(), "ground_pts_m": ground[visible].tolist(),
             "stop_line_m": stop_line,
-            "clock_box_px": [6, 6, int(330 * args.scale / 0.75), 42],
+            # The clock text is drawn after resizing, so its box does not scale.
+            "clock_box_px": None if args.no_clock else [6, 6, 330, 42],
             "signal_light_px": signal_px,
         },
         "party_to_track": None,
@@ -177,7 +280,8 @@ def main():
     }
     (d / "case_input.json").write_text(json.dumps(case_input, indent=1))
     print(f"{len(out_rows)} frames written ({int((~keep).sum())} dropped); "
-          f"{int(visible.sum())} calibration points visible; {len(ticks)} clock ticks; "
+          f"{int(visible.sum())} calibration points visible; "
+          f"{'no clock' if args.no_clock else str(len(ticks)) + ' clock ticks'}; "
           f"signal head {'at ' + str(signal_px) if signal_px else 'NOT in view'}")
 
 

@@ -183,9 +183,32 @@ Check the camera view after step 1: open `cases/carla_002/frames/000000.png`.
 | `--cam-side` | 8 | camera offset away from B's side, m |
 | `--cam-height` | 11 | camera height, m |
 | `--fov` | 90 | horizontal field of view, degrees |
+| `--kind` | t_bone | `t_bone`, `rear_end` (A into B ahead, same lane), `near_miss` (no impact expected) |
+| `--b-vehicle` | car | `car` or `motorcycle` (a scooter where the build has one) |
+| `--brake-decel`, `--brake-before` | 0, 0 | A brakes at this m/s^2, starting this many s before impact |
+| `--miss-gap` | 1.0 | near_miss: B passes this many s before A |
+| `--weather` | ClearNoon | any `carla.WeatherParameters` preset: `ClearNight`, `HardRainNoon`, ... |
+| `--traffic` | 0 | other cars on autopilot around the junction |
 
 `sim/degrade.py` options: `--drop 0.12` (fraction of frames dropped), `--dup 0.03`,
-`--crf 32`, `--scale 0.75`, `--click-noise-px 2`, `--seed 0`.
+`--crf 32`, `--scale 0.75`, `--click-noise-px 2`, `--seed 0`, `--no-clock` (no burned-in
+clock), `--claim-a 30` (speed the white car's driver claims). It writes the
+drivers' statements to suit the scenario, and the verdict a correct checker
+should give for each claim into `gt.json` only (the pipeline never sees it).
+
+### The test suite (one command)
+
+`scripts/carla_suite.py` renders 12 scenarios plus 4 footage variants, runs
+the full pipeline on each twice (contact point from the lowest mask pixel, and
+from the wheels), scores everything against ground truth, and writes
+`cases/suite/summary.md`. It resumes where it stopped, so a CARLA crash costs
+only the scenario in progress.
+
+```bash
+python scripts/carla_suite.py --list              # what each scenario tests
+python scripts/carla_suite.py                     # everything (about 1.5-2 hours)
+python scripts/carla_suite.py --only base,near_miss --variants lowest   # a quick subset
+```
 
 Several scenarios for the accuracy table:
 

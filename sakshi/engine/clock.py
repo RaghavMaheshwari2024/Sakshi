@@ -278,20 +278,37 @@ def refine_with_motion(n: int, ticks: list[tuple[int, float]], nominal_fps: floa
     return FrameClock(t - t0, sigma, method, duplicate, sampler, gaps=g)
 
 
+# Without a burned-in clock, frames a recorder dropped are invisible: real time
+# can only be LONGER than the file says. Each Monte Carlo sample stretches time
+# by a random factor, so the 90% intervals admit up to ~20% dropped frames.
+UNKNOWN_DROP_STRETCH = (0.98, 1.20)
+
+
+def _stretch_sampler(t: np.ndarray):
+    def sampler(rng):
+        return t * rng.uniform(*UNKNOWN_DROP_STRETCH)
+    return sampler
+
+
 def from_pts(pts_s: np.ndarray, duplicate: np.ndarray | None = None) -> FrameClock:
+    """Container timestamps. A file whose frames are evenly spaced (most CCTV
+    exports, anything re-encoded) says nothing about dropped frames, so its
+    times are treated as a lower bound; a file with uneven spacing (variable
+    frame rate, e.g. phones) records real capture times and is trusted."""
     pts_s = np.asarray(pts_s, float)
     n = len(pts_s)
     duplicate = np.zeros(n, bool) if duplicate is None else duplicate
     if n > 1 and np.any(np.diff(pts_s) <= 0):
         raise ValueError("Container timestamps are not increasing.")
-    return FrameClock(pts_s - pts_s[0], np.full(n, 0.002), "container_pts", duplicate)
+    t = pts_s - pts_s[0]
+    steps = np.diff(t)
+    if n > 2 and steps.std() / steps.mean() > 0.02:  # variable frame rate: real capture times
+        return FrameClock(t, np.full(n, 0.002), "container_pts", duplicate)
+    sampler = _stretch_sampler(t)
+    return FrameClock(t, 0.1 * t + 0.002, "container_pts_even", duplicate, sampler)
 
 
 def from_fps(n: int, fps: float, duplicate: np.ndarray | None = None) -> FrameClock:
     duplicate = np.zeros(n, bool) if duplicate is None else duplicate
     t = np.arange(n) / fps
-
-    def sampler(rng):  # unknown drops: the effective rate may be off by several %
-        return t * rng.uniform(0.95, 1.05)
-
-    return FrameClock(t, 0.05 * t + 0.5 / fps, "nominal_fps", duplicate, sampler)
+    return FrameClock(t, 0.1 * t + 0.5 / fps, "nominal_fps", duplicate, _stretch_sampler(t))

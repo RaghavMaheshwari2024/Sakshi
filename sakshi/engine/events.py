@@ -82,6 +82,24 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
     return sorted(impacts, key=lambda e: e["t"])
 
 
+def closest_approach(results: dict[str, TrackResult], tracks: list[dict]) -> dict | None:
+    """When no impact is found (a near miss): the moment two road users came
+    closest on the ground. Speed claims are then checked around that moment."""
+    by_id = {t["id"]: t for t in tracks}
+    ids = [i for i in results if by_id[i]["concept"] in MOVERS]
+    best = None
+    for a, b in itertools.combinations(ids, 2):
+        ra, rb = results[a], results[b]
+        common = np.intersect1d(ra.frames, rb.frames)
+        for i in common:
+            ka, kb = int(np.searchsorted(ra.frames, i)), int(np.searchsorted(rb.frames, i))
+            gap = float(np.linalg.norm(ra.nominal.pos[ka] - rb.nominal.pos[kb]))
+            if best is None or gap < best["gap_m"]:
+                best = {"type": "closest_approach", "tracks": [a, b], "i": int(i),
+                        "t": round(float(ra.nominal.t[ka]), 3), "gap_m": round(gap, 2)}
+    return best
+
+
 def window_speed(res: TrackResult, t0: float, t1: float) -> dict | None:
     """Mean speed over [t0, t1] per Monte Carlo sample -> median and 90% interval."""
     m = (res.nominal.t >= t0) & (res.nominal.t <= t1)

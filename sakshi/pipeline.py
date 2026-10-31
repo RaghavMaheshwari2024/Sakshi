@@ -31,6 +31,7 @@ import numpy as np
 
 from . import config
 from .engine import claims as claims_mod
+from .engine import contact as contact_mod
 from .engine import clock as clock_mod
 from .engine import events, homography, signals
 from .engine.kalman import Smoothed
@@ -54,7 +55,7 @@ def _time_to_seconds(r: dict) -> float | None:
 
 
 def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, progress: Progress,
-                ticks_override=None):
+                ticks_override=None, stats: dict | None = None):
     """Returns (FrameClock, ticks). Ticks are kept for the drop-aware refinement."""
         # One pass, keeping only the previous frame: memory stays flat for long clips.
     dup_list, cand_all = [], []
@@ -79,6 +80,8 @@ def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, pro
         from .meta import spark
 
         cand = cand_all[:60]
+        if stats is not None:
+            stats["spark_clock_reads"] = len(cand)
         frames = read_frames(video, set(cand))
         ticks = []
         for i in cand:
@@ -99,7 +102,7 @@ def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, pro
 
 
 def signal_timeline(video: Path, tracks: list[dict], clk, progress: Progress,
-                    offline: bool = False) -> dict:
+                    offline: bool = False, stats: dict | None = None) -> dict:
     lights = [t for t in tracks if t["concept"] == "traffic light"]
     out = {}
     for lt in lights:
@@ -117,6 +120,8 @@ def signal_timeline(video: Path, tracks: list[dict], clk, progress: Progress,
             from .meta import spark
 
             picks = unclear[:: max(1, len(unclear) // 20)][:20]
+            if stats is not None:
+                stats["spark_light_reads"] = stats.get("spark_light_reads", 0) + len(picks)
             for k in picks:
                 i = sorted(boxes)[k]
                 states[k][1] = spark.read_light(crop(frames[i], boxes[i], 4))
@@ -227,6 +232,35 @@ def choose_signal(sig: dict, chosen: str | None, tracks: list[dict] | None = Non
                       "choose which one governs the stop line")
 
 
+def _models_summary(tracks, stats, statements, scene, party, claims, report, live: bool) -> list[dict]:
+    """What each Meta model did in this case, for the UI's model strip and the report."""
+    out = []
+    if live:
+        kinds: dict[str, int] = {}
+        for t in tracks:
+            kinds[t["concept"]] = kinds.get(t["concept"], 0) + 1
+        out.append({"model": config.SAM_MODEL, "role": "tracking",
+                    "did": "tracked " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))})
+    reads = stats.get("spark_clock_reads", 0) + stats.get("spark_light_reads", 0)
+    if reads:
+        out.append({"model": config.SPARK_MODEL, "role": "reading the video",
+                    "did": f"read the clock on {stats.get('spark_clock_reads', 0)} frames and the signal on "
+                           f"{stats.get('spark_light_reads', 0)} frames"})
+    heard = sum(1 for s in statements if s.get("transcribed"))
+    if heard:
+        out.append({"model": config.VOICE_MODEL, "role": "statements", "did": f"transcribed {heard} recorded statements"})
+    if scene or (claims and live) or report:
+        did = []
+        if scene:
+            did.append(f"matched {len(scene.get('party_to_track', []))} of {len(statements)} statements to road users")
+        if claims and live:
+            did.append(f"extracted {len(claims)} checkable claims")
+        if report:
+            did.append("wrote the report summary" + (" (number check passed)" if report["validator"]["passed"] else ""))
+        out.append({"model": config.WONDER_MODEL, "role": "understanding", "did": "; ".join(did)})
+    return out
+
+
 def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] | None = None,
         mc: MCConfig | None = None) -> dict:
     case_dir = Path(case_dir)
@@ -240,37 +274,60 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     calib = homography.fit(cal_in["image_pts"], cal_in["ground_pts_m"])
     progress("calibration", {"reproj_rms_m": round(calib.rms_err_m, 3)})
 
+    stats: dict = {}
     if inp.get("clock_mode") == "nominal_fps":  # ablation: no timing correction
         clk, clk_ticks = clock_mod.from_fps(info.n, info.fps), None
     else:
         clk, clk_ticks = build_clock(video, info.n, info.fps, info.pts_s, cal_in.get("clock_box_px"),
-                                     progress, ticks_override=inp.get("clock_ticks_override"))
+                                     progress, ticks_override=inp.get("clock_ticks_override"), stats=stats)
     progress("clock", {"method": clk.method})
 
+    contact_mode = inp.get("contact_mode", config.CONTACT_MODE)
     if tracks_override is not None:
         tracks = tracks_override
     else:
         from .meta import sam
 
-        progress("tracking", {"concepts": config.SAM_CONCEPTS})
-        tracks = asyncio.run(sam.track_video(video))
-    progress("tracking", {"tracks": [t["id"] for t in tracks]})
+        concepts = list(config.SAM_CONCEPTS) + (["wheel"] if contact_mode == "wheels" else [])
+        progress("tracking", {"concepts": concepts})
+        tracks = asyncio.run(sam.track_video(video, concepts))
+    progress("tracking", {"tracks": [t["id"] for t in tracks if t["concept"] != "wheel"]})
+    contact_report: dict = {}
+    if contact_mode == "wheels":
+        tracks, contact_report = contact_mod.wheel_contacts(tracks, calib.H)
+        progress("tracking", {"wheel_contacts": contact_report})
 
-    if clk.method == "clock_ticks" and clk_ticks and inp.get("clock_mode") != "ticks_only":
+    # Only road users are measured (not traffic lights, not vehicle parts).
+    movers = [t for t in tracks if t["concept"] in events.MOVERS]
+    refine_ticks = clk_ticks if clk.method == "clock_ticks" and inp.get("clock_mode") != "ticks_only" else None
+    if refine_ticks:
         # Drop-aware refinement: the vehicles' own motion shows where frames were lost.
         steps, step_sig = step_displacements(tracks, calib, info.n)
-        clk = clock_mod.refine_with_motion(info.n, clk_ticks, info.fps, steps, clk.duplicate, step_sigma=step_sig)
+        clk_ticked = clk
+        clk = clock_mod.refine_with_motion(info.n, refine_ticks, info.fps, steps, clk.duplicate, step_sigma=step_sig)
         progress("clock", {"method": clk.method,
                            "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})
 
-    results = measure(tracks, calib, clk, mc)
+    results = measure(movers, calib, clk, mc)
     progress("physics", {"measured_tracks": list(results)})
 
     impacts = events.detect_impacts(results, tracks)
+    if impacts and refine_ticks:
+        # After contact, motion is violent and no longer smooth, so it would read
+        # as fake dropped frames: refit the clock from pre-impact motion only.
+        i_imp = impacts[0]["i"]
+        steps_pre = {k: np.where(np.arange(info.n) < i_imp, v, np.nan) for k, v in steps.items()}
+        clk = clock_mod.refine_with_motion(info.n, refine_ticks, info.fps, steps_pre, clk_ticked.duplicate,
+                                           step_sigma=step_sig)
+        progress("clock", {"method": clk.method, "refit": "pre-impact motion only",
+                           "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})
+        results = measure(movers, calib, clk, mc)
+        impacts = events.detect_impacts(results, tracks) or impacts
     impact = impacts[0] if impacts else None
+    closest = None if impact else events.closest_approach(results, tracks)
     braking, momentum, speeds = {}, None, {}
     if impact:
-        results = split_at_impact(results, tracks, calib, clk, mc, impact)
+        results = split_at_impact(results, movers, calib, clk, mc, impact)
         progress("physics", {"split_at_frame": impact["i"]})
         for tid in impact["tracks"]:
             braking[tid] = events.braking_onset(results[tid], impact["t"])
@@ -279,9 +336,9 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
                 "at_impact": events.window_speed(results[tid], impact["t"] - 0.25, impact["t"] - 0.05),
             }
         momentum = events.momentum_check(impact, results, tracks)
-    progress("events", {"impact": impact, "momentum": momentum})
+    progress("events", {"impact": impact, "momentum": momentum, "closest_approach": closest})
 
-    sig = signal_timeline(video, tracks, clk, progress, offline=tracks_override is not None)
+    sig = signal_timeline(video, tracks, clk, progress, offline=tracks_override is not None, stats=stats)
     main_light, signal_track, signal_note = choose_signal(
         sig, cal_in.get("signal_track"), tracks, cal_in.get("signal_light_px"))
 
@@ -301,16 +358,18 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     if statements and tracks_override is None:
         from .meta import wonder
 
+        shown = [t for t in tracks if t["concept"] != "wheel"]  # parts are not road users
         scene = wonder.describe_scene(
-            labelled_keyframes(video, tracks, info.n, impact["i"] if impact else None), statements,
-            [t["id"] for t in tracks],
+            labelled_keyframes(video, shown, info.n, impact["i"] if impact else None), statements,
+            [t["id"] for t in shown],
         )
         progress("scene", {"suggested": scene["party_to_track"]})
         if not party:  # use the suggestion, but mark it as unconfirmed
             party = {p["statement_id"]: p["track_id"] for p in scene["party_to_track"]}
 
     checked = []
-    ctx = {"impact_t": impact["t"] if impact else None, "signal_changes": main_light,
+    ctx = {"impact_t": impact["t"] if impact else None, "closest_t": closest["t"] if closest else None,
+           "signal_changes": main_light,
             "stop_line": cal_in.get("stop_line_m"), "braking": braking, "signal_note": signal_note}
     if inp.get("claims_override"):  # testing: claims written by hand, no model call
         checked = [claims_mod.evaluate(c, results, ctx) for c in inp["claims_override"]]
@@ -323,6 +382,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     facts = {
         "impact": impact,
+        "closest_approach": closest,
         "speeds": speeds,
         "braking": braking,
         "momentum_check": momentum,
@@ -341,6 +401,10 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     case = {
         "version": 1,
+        "camera_mode": inp.get("camera_mode", "fixed"),
+        "contact": {"mode": contact_mode, "per_vehicle": contact_report},
+        "models": _models_summary(tracks, stats, statements, scene, party, checked, report,
+                                  live=tracks_override is None),
         "private_mode": config.PRIVATE_MODE,
         "clip": {"file": video.name, "frames": info.n, "fps_nominal": info.fps,
                  "width": info.width, "height": info.height},
