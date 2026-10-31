@@ -138,6 +138,7 @@ def row(name: str, variant: str, what: str, ev: dict, note: str = "") -> dict:
     imp = ev.get("impact", {})
     r["impact"] = imp.get("outcome", "")
     r["impact_err_s"] = imp.get("t_error_s", "")
+    r["clock_err_s"] = imp.get("clock_error_s", "")
     for veh in ("A", "B"):
         stats = next((s for s in ev.get("vehicles", {}).values() if s.get("vehicle") == veh), {})
         last = stats.get("last_2s", {})
@@ -154,7 +155,7 @@ def row(name: str, variant: str, what: str, ev: dict, note: str = "") -> dict:
     return r
 
 
-COLS = ["scenario", "variant", "impact", "impact_err_s", "A_err_pct", "A_bias_pct", "A_in90_pct",
+COLS = ["scenario", "variant", "impact", "impact_err_s", "clock_err_s", "A_err_pct", "A_bias_pct", "A_in90_pct",
         "B_err_pct", "B_bias_pct", "B_in90_pct", "claims", "drops_inferred/true", "clock", "note", "tests"]
 
 
@@ -164,7 +165,9 @@ def write_summary(rows: list[dict]):
         w.writeheader()
         w.writerows(rows)
     lines = ["# CARLA suite (fixed camera)", "",
-             "Speed error and 90% coverage are over the last 2 s before the impact (or closest approach).", "",
+             "Speed error and 90% coverage are over the last 2 s before the impact (or closest approach). "
+             "impact_err_s: true time of the frame we called the impact minus the true impact time; "
+             "clock_err_s: how far our clock is off at that frame (time origin is the first frame).", "",
              "| " + " | ".join(COLS[:-1]) + " |", "|" + " --- |" * (len(COLS) - 1)]
     for r in rows:
         lines.append("| " + " | ".join(str(r.get(c, "")) for c in COLS[:-1]) + " |")

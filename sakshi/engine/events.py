@@ -82,6 +82,65 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
     return sorted(impacts, key=lambda e: e["t"])
 
 
+def _hinge_sse(t: np.ndarray, z: np.ndarray, tb: float | None) -> float:
+    """Squared residuals (metres^2) of one smooth motion through the window,
+    plus, if tb is given, a sudden change of velocity and acceleration at tb
+    (position stays continuous). Fitted by least squares; same data for every tb."""
+    tc = t - t.mean()
+    cols = [np.ones_like(tc), tc, tc ** 2]
+    if tb is not None:
+        h = np.clip(t - tb, 0, None)
+        cols += [h, h ** 2]
+    A = np.stack(cols, 1)
+    coef, *_ = np.linalg.lstsq(A, z, rcond=None)
+    return float(((A @ coef - z) ** 2).sum())
+
+
+def refine_impact(impact: dict, tracks: list[dict], H: np.ndarray, t_frames: np.ndarray,
+                  before_s: float = 0.25, after_s: float = 0.8, margin_s: float = 0.8,
+                  max_ratio: float = 0.5) -> dict:
+    """Move the impact to where the motion actually breaks.
+
+    `detect_impacts` fires on the first frame the two road users are close
+    (ground gap <= 4.5 m), which can be a few metres before they touch: the
+    contact points are wheels or the lowest mask pixel, not the bumpers. A
+    collision is a sudden change of velocity. So, over a fixed window around
+    that first frame, fit each vehicle's raw ground track with one smooth motion
+    that is allowed a velocity jump at a candidate frame, and take the frame
+    where both vehicles' jumps explain the motion best. Kept only if the jump
+    clearly helps (residual below `max_ratio` of the no-jump fit, on average);
+    otherwise the original frame stands."""
+    from . import homography as hg
+
+    by_id = {t["id"]: t for t in tracks}
+    t0 = impact["t"]
+    lo, hi = t0 - before_s - margin_s, t0 + after_s + margin_s
+    series = []
+    for tid in impact["tracks"]:
+        pts = [(f["i"], f["contact_px"]) for f in by_id[tid]["frames"]
+               if f.get("contact_px") and 0 <= f["i"] < len(t_frames) and lo <= t_frames[f["i"]] <= hi]
+        if len(pts) < 12:
+            return {**impact, "method": "first_close"}
+        idx = np.array([p[0] for p in pts])
+        z = hg.img_to_ground(H, np.array([p[1] for p in pts], float))
+        series.append((idx, t_frames[idx], z, _hinge_sse(t_frames[idx], z, None)))
+    cand = sorted({int(i) for idx, tt, _, _ in series for i, t in zip(idx, tt) if t0 - before_s <= t <= t0 + after_s})
+    if len(cand) < 3:
+        return {**impact, "method": "first_close"}
+    ratio = np.array([[_hinge_sse(tt, z, float(t_frames[i])) / max(base, 1e-9) for _, tt, z, base in series]
+                      for i in cand])
+    k = int(np.argmin(ratio.mean(1)))
+    if ratio[k].mean() > max_ratio:
+        return {**impact, "method": "first_close"}
+    best = cand[k]
+    p = [z[int(np.argmin(np.abs(idx - best)))] for idx, _, z, _ in series]
+    out = dict(impact)
+    out.update({"i": int(best), "t": round(float(t_frames[best]), 3), "first_close_t": impact["t"],
+                "method": "motion_break", "ground_gap_m": round(float(np.linalg.norm(p[0] - p[1])), 2),
+                "xy": np.round((p[0] + p[1]) / 2, 2).tolist()})
+    return out
+
+
 def closest_approach(results: dict[str, TrackResult], tracks: list[dict]) -> dict | None:
     """When no impact is found (a near miss): the moment two road users came
     closest on the ground. Speed claims are then checked around that moment."""

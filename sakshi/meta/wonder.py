@@ -115,19 +115,31 @@ def _pin(schema: dict, path: list[str], values: list[str]) -> dict:
 
 
 def describe_scene(labelled_keyframes: list[np.ndarray], statements: list[dict],
-                   track_ids: list[str]) -> dict:
-    """`labelled_keyframes` have track ids drawn on them (see pipeline)."""
-    frames = labelled_keyframes[:40]  # well under the ~50-image guideline
+                   track_ids: list[str], involved: list[str] | None = None, n_closeups: int = 0,
+                   near_miss: bool = False) -> dict:
+    """`labelled_keyframes` have track ids drawn on them (see pipeline); the last
+    `n_closeups` images are close-ups of the `involved` tracks."""
+    closeups = labelled_keyframes[len(labelled_keyframes) - n_closeups:] if n_closeups else []
+    frames = labelled_keyframes[:len(labelled_keyframes) - n_closeups][:40 - len(closeups)] + closeups
+    hint = ""
+    if involved:
+        what = "come closest to each other (a near miss, no contact)" if near_miss else "collide"
+        hint = (f"The measurements show that {' and '.join(involved)} {what}; the people giving "
+                "statements are most likely in those, one statement per road user. ")
+    if closeups:
+        hint += f"The last {len(closeups)} images are enlarged close-ups of those road users, labelled with their ids. "
     text = (
         "These are keyframes, in time order, from a fixed traffic camera. Each tracked "
         "road user is outlined and labelled with its track id; the ONLY track ids are: "
-        f"{', '.join(track_ids)}. Describe what you see for each of those ids (type, "
+        f"{', '.join(track_ids)}. " + hint + "Describe what you see for each of those ids (type, "
         "colour, where it moves). Describe only what is visible: do not name streets "
         "or add road users that are not labelled. Do NOT estimate any speed, distance "
         "or time: those are measured elsewhere. Then, using the statements below (each "
         "has an id), suggest which track each statement-giver was driving or riding, "
-        "with a reason based on what you see (for example the colour of the vehicle); "
-        "omit a statement if you cannot tell.\n\n"
+        "with a reason based on what you see: match the vehicle type and colour each "
+        "speaker gives for THEMSELVES (\"I was driving the white car\", \"main laal "
+        "scooty chala raha tha\"), not the vehicle they talk about. Omit a statement if "
+        "you cannot tell.\n\n"
         "Statements:\n" + json.dumps(statements, ensure_ascii=False, indent=1)
     )
     schema = _pin(SCENE_SCHEMA, ["properties", "tracks", "items", "properties", "track_id"], track_ids)

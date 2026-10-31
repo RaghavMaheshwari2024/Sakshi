@@ -124,7 +124,12 @@ def main(case_dir: str | Path, mapping: dict[str, str] | None = None, quiet: boo
     elif found is None:
         report["impact"] = {"outcome": "MISSED"}
     else:
-        report["impact"] = {"outcome": "detected", "t_error_s": round(found["t"] - gt["t_impact"], 3)}
+        # Judge the detected FRAME by its true time, so this measures detection
+        # alone; how far our clock is off at that frame is reported separately.
+        g = gt_by_i.get(found["i"])
+        t_true = g["t"] if g else found["t"]
+        report["impact"] = {"outcome": "detected", "t_error_s": round(t_true - gt["t_impact"], 3),
+                            "clock_error_s": round(found["t"] - t_true, 3), "method": found.get("method")}
     report["signal_changes"] = {"measured": case["facts"]["signal_changes"], "truth": gt.get("signal_changes")}
     report.update(_score_claims(case, gt, mapping))
     if "expected_verdicts" in gt:  # the synthetic case
