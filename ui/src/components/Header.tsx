@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldAlert, Video, Eye, FileText, Camera, BarChart3, Sliders, Plus } from 'lucide-react';
+import { ShieldAlert, Video, Eye, FileText, Camera, BarChart3, Sliders, Plus, HelpCircle } from 'lucide-react';
 import { useCaseStore } from '../store/useCaseStore';
 
 export type ActiveView = 'case' | 'report' | 'accuracy' | 'calibration';
@@ -9,6 +9,7 @@ interface HeaderProps {
   setActiveView: (view: ActiveView) => void;
   onOpenProcessing?: () => void;
   onOpenNewCase?: () => void;
+  onOpenGuide?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -16,6 +17,7 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveView,
   onOpenProcessing,
   onOpenNewCase,
+  onOpenGuide,
 }) => {
   const { caseData } = useCaseStore();
   const cameraMode = caseData?.camera_mode || 'fixed';
@@ -111,6 +113,17 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <div className="h-4 w-[1px] bg-zinc-800 mx-1 hidden sm:block" />
+
+        {onOpenGuide && (
+          <button
+            onClick={onOpenGuide}
+            className="flex items-center space-x-1 px-2.5 py-1.5 rounded text-xs font-medium text-amber-300 bg-amber-950/40 border border-amber-800/50 hover:bg-amber-900/40 transition-all active:scale-95"
+            title="Open Investigator Guide (or press ?)"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">Guide</span>
+          </button>
+        )}
 
         {onOpenProcessing && (
           <button

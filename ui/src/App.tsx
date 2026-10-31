@@ -11,6 +11,7 @@ import { AccuracyView } from './components/AccuracyView';
 import { CalibrationView } from './components/CalibrationView';
 import { ProcessingModal } from './components/ProcessingModal';
 import { NewCaseModal } from './components/NewCaseModal';
+import { InvestigatorGuideModal } from './components/InvestigatorGuideModal';
 import { Loader2, AlertCircle, Cpu, Eye } from 'lucide-react';
 import { CaseData } from './types/case';
 
@@ -19,6 +20,10 @@ export const App: React.FC = () => {
   const [activeView, setActiveView] = useState<ActiveView>('case');
   const [isProcessingOpen, setIsProcessingOpen] = useState(false);
   const [isNewCaseOpen, setIsNewCaseOpen] = useState(false);
+  const [isGuideOpen, setIsGuideOpen] = useState(() => {
+    // Open guide automatically on first start if not dismissed permanently
+    return !localStorage.getItem('sakshi_guide_seen');
+  });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -59,9 +64,12 @@ export const App: React.FC = () => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
 
       if (e.key === 'Escape') {
-        if (isProcessingOpen) setIsProcessingOpen(false);
+        if (isGuideOpen) setIsGuideOpen(false);
+        else if (isProcessingOpen) setIsProcessingOpen(false);
         else if (isNewCaseOpen) setIsNewCaseOpen(false);
         else if (activeView !== 'case') setActiveView('case');
+      } else if (e.key === '?') {
+        setIsGuideOpen((prev) => !prev);
       } else if (e.key === '1') {
         setActiveView('case');
       } else if (e.key === '2') {
@@ -75,7 +83,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeView, isProcessingOpen, isNewCaseOpen]);
+  }, [activeView, isProcessingOpen, isNewCaseOpen, isGuideOpen]);
 
   if (loading) {
     return (
@@ -115,7 +123,7 @@ export const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-workspace-bg text-zinc-100 flex flex-col select-none font-sans antialiased overflow-x-hidden">
+    <div className="min-h-screen bg-workspace-bg text-zinc-100 flex flex-col font-sans antialiased overflow-x-hidden">
       {/* Universal Header (Hidden when printing the report) */}
       <div className="print:hidden">
         <Header
@@ -123,11 +131,12 @@ export const App: React.FC = () => {
           setActiveView={setActiveView}
           onOpenProcessing={() => setIsProcessingOpen(true)}
           onOpenNewCase={() => setIsNewCaseOpen(true)}
+          onOpenGuide={() => setIsGuideOpen(true)}
         />
       </div>
 
       {/* Primary Workspace Viewport */}
-      <main className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+      <main className="flex-1 flex flex-col min-h-0 pb-16">
         {activeView === 'report' && (
           <ReportView onBack={() => setActiveView('case')} />
         )}
@@ -152,25 +161,25 @@ export const App: React.FC = () => {
         )}
 
         {activeView === 'case' && (
-          <div className="flex-1 flex flex-col p-2 sm:p-3 space-y-2 min-h-0">
+          <div className="flex-1 flex flex-col p-2 sm:p-3 space-y-3 min-h-0">
             {/* 4-Panel Hero Grid */}
-            <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-2 min-h-0">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 min-h-0">
               {/* Left Column: Video Overlay (P1) + Speed Chart (P3) */}
-              <div className="flex flex-col space-y-2 min-h-0">
-                <div className="flex-1 min-h-[300px] xl:min-h-[380px]">
+              <div className="flex flex-col space-y-3">
+                <div className="h-[360px] xl:h-[430px]">
                   <VideoPanel />
                 </div>
-                <div className="h-[260px] xl:h-[300px]">
+                <div className="h-[310px] xl:h-[360px]">
                   <SpeedChartPanel />
                 </div>
               </div>
 
               {/* Right Column: Top-Down Birds-Eye Replay (P2) + Statements & Verification (P4) */}
-              <div className="flex flex-col space-y-2 min-h-0">
-                <div className="flex-1 min-h-[300px] xl:min-h-[380px]">
+              <div className="flex flex-col space-y-3">
+                <div className="h-[360px] xl:h-[430px]">
                   <TopDownPanel />
                 </div>
-                <div className="h-[260px] xl:h-[300px]">
+                <div className="h-[310px] xl:h-[360px]">
                   <ClaimsPanel />
                 </div>
               </div>
@@ -236,6 +245,11 @@ export const App: React.FC = () => {
           setIsNewCaseOpen(false);
           setIsProcessingOpen(true);
         }}
+      />
+
+      <InvestigatorGuideModal
+        isOpen={isGuideOpen}
+        onClose={() => setIsGuideOpen(false)}
       />
     </div>
   );

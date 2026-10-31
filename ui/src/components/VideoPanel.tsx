@@ -31,7 +31,7 @@ export const VideoPanel: React.FC = () => {
     if (!video || isPlaying) return;
     const nominalFps = caseData?.clip?.fps_nominal || 25;
     const targetVideoTime = (currentFrame + 0.5) / nominalFps;
-    if (Math.abs(video.currentTime - targetVideoTime) > 0.04) {
+    if (Math.abs(video.currentTime - targetVideoTime) > 0.01) {
       video.currentTime = targetVideoTime;
     }
   }, [currentFrame, isPlaying, caseData]);
@@ -215,11 +215,19 @@ export const VideoPanel: React.FC = () => {
           src={videoUrl}
           playsInline
           muted
+          preload="auto"
           crossOrigin="anonymous"
           className="max-w-full max-h-full object-contain pointer-events-none"
           onLoadedMetadata={(e) => {
             const v = e.currentTarget;
             setVideoDims({ width: v.videoWidth, height: v.videoHeight });
+            const nominalFps = caseData?.clip?.fps_nominal || 25;
+            v.currentTime = (currentFrame + 0.5) / nominalFps;
+          }}
+          onLoadedData={(e) => {
+            const v = e.currentTarget;
+            const nominalFps = caseData?.clip?.fps_nominal || 25;
+            v.currentTime = (currentFrame + 0.5) / nominalFps;
           }}
           onEnded={() => setIsPlaying(false)}
         />
