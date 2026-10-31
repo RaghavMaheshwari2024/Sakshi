@@ -135,7 +135,7 @@ def labelled_keyframes(video: Path, tracks: list[dict], n_frames: int, around: i
     """Keyframes with every track's box and id drawn on, then one close-up per
     `focus` track (the vehicles in the impact or near miss) at the frame where it
     looks biggest before that moment, so its colour and type are clear even
-    when it is small in the wide view. Returns (all images, the close-ups alone)."""
+    when it is small in the wide view."""
     idx = set(np.linspace(0, n_frames - 1, k).astype(int).tolist())
     if around is not None:
         idx |= set(range(max(0, around - 10), min(n_frames, around + 11), 5))
@@ -165,7 +165,6 @@ def labelled_keyframes(video: Path, tracks: list[dict], n_frames: int, around: i
                     cv2.rectangle(img, (x1, y1), (x2, y2), c, 2)
                     cv2.putText(img, t["id"], (x1, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 2)
         out.append(img)
-    closeups = []
     for tid, f in close.items():
         if f["i"] not in frames:
             continue
@@ -180,8 +179,8 @@ def labelled_keyframes(video: Path, tracks: list[dict], n_frames: int, around: i
         c = cv2.resize(c, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         c = cv2.copyMakeBorder(c, 30, 0, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
         cv2.putText(c, f"close-up of {tid}", (6, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        closeups.append(c)
-    return out + closeups, closeups
+        out.append(c)
+    return out, [tid for tid, f in close.items() if f["i"] in frames]
 
 
 def check_party(party: dict[str, str], statement_ids: list[str], involved: list[str]) -> tuple[dict, list[str]]:
@@ -219,6 +218,75 @@ def check_party(party: dict[str, str], statement_ids: list[str], involved: list[
     return party, notes
 
 
+def match_parties(wonder, keyframes: list, closeups: list[str], statements: list[dict], shown_ids: list[str],
+                  involved: list[str], near_miss: bool, party: dict | None, progress: Progress = _noop):
+    """Which road user each statement-giver drove: Muse Wonder's suggestion from
+    the labelled keyframes (the last len(closeups) images are close-ups of the
+    `involved` vehicles), checked against the geometry. If statements stay
+    unmatched, ask once more with the close-ups only. A party map given by the
+    user wins. Returns (scene, party)."""
+    scene = wonder.describe_scene(keyframes, statements, shown_ids, involved=involved,
+                                  n_closeups=len(closeups), near_miss=near_miss)
+    progress("scene", {"suggested": scene["party_to_track"]})
+    if party:
+        return scene, party
+    sids = [s["id"] for s in statements]
+    party = {p["statement_id"]: p["track_id"] for p in scene["party_to_track"]}
+    party, notes = check_party(party, sids, involved)
+    if len(party) < len(sids) and closeups:
+        closeup_imgs = keyframes[len(keyframes) - len(closeups):]
+        focused = wonder.describe_scene(closeup_imgs, statements, involved, involved=involved,
+                                        n_closeups=len(closeup_imgs), near_miss=near_miss)
+        for p in focused["party_to_track"]:
+            party.setdefault(p["statement_id"], p["track_id"])
+        party, more = check_party(party, sids, involved)
+        notes += ["asked again with close-ups only"] + more
+        scene["party_to_track_closeups"] = focused["party_to_track"]
+    if notes:
+        scene["party_checks"] = notes
+        progress("scene", {"party_checks": notes, "using": party})
+    return scene, party
+
+
+def read_claims(wonder, statements: list[dict], party: dict[str, str], progress: Progress = _noop) -> list[dict]:
+    """Claims from the statements, checked before any verdict is given.
+
+    Each claim is repaired where its label contradicts its value
+    (claims.normalize), then checked (claims.problems). If any are malformed,
+    Muse Wonder is shown its answer and the problems and asked once more. A
+    claim still malformed after that is kept but marked `unreadable`: it is
+    shown as "could not read", never given a verdict. If the second request
+    fails (network, API), the first answer is used with the same marking."""
+    sids = [s["id"] for s in statements]
+    tracks = sorted(set(party.values()))
+
+    def check(raw):
+        cl = [claims_mod.normalize(c) for c in raw]
+        return cl, [claims_mod.problems(c, sids, tracks) for c in cl]
+
+    first = wonder.extract_claims(statements, party)
+    claims, probs = check(first)
+    flat = [p for ps in probs for p in ps]
+    if flat:
+        progress("claims", {"malformed": flat, "action": "asking Muse Wonder once more"})
+        try:
+            claims2, probs2 = check(wonder.extract_claims(statements, party, previous=first, problems=flat))
+        except Exception as e:  # noqa: BLE001
+            progress("claims", {"retry_failed": str(e)[:200]})
+        else:
+            good1, good2 = sum(not p for p in probs), sum(not p for p in probs2)
+            # Keep the second answer only if it is no worse: no fewer well-formed
+            # claims (an empty list is not a fix) and no more problems.
+            if good2 >= good1 and sum(map(len, probs2)) <= len(flat):
+                claims, probs = claims2, probs2
+    out = []
+    for c, ps in zip(claims, probs):
+        out.append({**c, "unreadable": ps} if ps else c)
+    if any(probs):
+        progress("claims", {"unreadable": [p for ps in probs for p in ps]})
+    return out
+
+
 def _split_tracks(tracks: list[dict], ids, i_split: int, before: bool) -> list[dict]:
     """The given tracks cut at frame i_split (kept: frames <= i if before, else >= i)."""
     out = []
@@ -249,7 +317,7 @@ def _stitch(pre: TrackResult, post: TrackResult | None, i_split: int) -> TrackRe
     )
 
 
-def split_at_impact(results, tracks, calib, clk, mc, impact) -> dict:
+def split_at_impact(results, tracks, calib, clk, mc, impact, post_tracks=None) -> dict:
     """Re-smooth the colliding road users separately before and after contact.
 
     A smoother run across the impact spreads the sudden post-impact
@@ -258,7 +326,9 @@ def split_at_impact(results, tracks, calib, clk, mc, impact) -> dict:
     """
     ids, i = impact["tracks"], impact["i"]
     pre = measure(_split_tracks(tracks, ids, i, True), calib, clk, mc)
-    post = measure(_split_tracks(tracks, ids, i, False), calib, clk, mc)
+    # After contact the vehicles overlap for good; `post_tracks` (if given) keep
+    # the contact points that the pre-impact occlusion check would remove.
+    post = measure(_split_tracks(post_tracks or tracks, ids, i, False), calib, clk, mc)
     out = dict(results)
     for tid in ids:
         if tid in pre:
@@ -367,43 +437,43 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         tracks, contact_report = contact_mod.wheel_contacts(tracks, calib.H)
         progress("tracking", {"wheel_contacts": contact_report})
 
+    # A contact point hidden behind a vehicle in front is not a measurement.
+    movers_all = [t for t in tracks if t["concept"] in events.MOVERS]
+    tracks, occluded = contact_mod.drop_occluded(tracks, events.MOVERS)
+    if occluded:
+        progress("tracking", {"occluded_contact_frames": occluded})
+
     # Only road users are measured (not traffic lights, not vehicle parts).
     movers = [t for t in tracks if t["concept"] in events.MOVERS]
-    refine_ticks = clk_ticks if clk.method == "clock_ticks" and inp.get("clock_mode") != "ticks_only" else None
-    if refine_ticks:
+    refine = clk.method == "clock_ticks" and clk_ticks and inp.get("clock_mode") != "ticks_only"
+    if refine:
         # Drop-aware refinement: the vehicles' own motion shows where frames were lost.
         steps, step_sig = step_displacements(tracks, calib, info.n)
         clk_ticked = clk
-        clk = clock_mod.refine_with_motion(info.n, refine_ticks, info.fps, steps, clk.duplicate, step_sigma=step_sig)
+        clk = clock_mod.refine_with_motion(info.n, clk_ticks, info.fps, steps, clk.duplicate, step_sigma=step_sig)
         progress("clock", {"method": clk.method,
                            "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})
 
     results = measure(movers, calib, clk, mc)
     progress("physics", {"measured_tracks": list(results)})
 
-    def find_impacts():
-        found = events.detect_impacts(results, tracks)
-        if found:  # first-close frame -> the frame where the motion breaks
-            found[0] = events.refine_impact(found[0], tracks, calib.H, clk.t)
-        return found
-
-    impacts = find_impacts()
-    if impacts and refine_ticks:
+    impacts = events.detect_impacts(results, tracks)
+    if impacts and refine:
         # After contact, motion is violent and no longer smooth, so it would read
         # as fake dropped frames: refit the clock from pre-impact motion only.
         i_imp = impacts[0]["i"]
         steps_pre = {k: np.where(np.arange(info.n) < i_imp, v, np.nan) for k, v in steps.items()}
-        clk = clock_mod.refine_with_motion(info.n, refine_ticks, info.fps, steps_pre, clk_ticked.duplicate,
+        clk = clock_mod.refine_with_motion(info.n, clk_ticks, info.fps, steps_pre, clk_ticked.duplicate,
                                            step_sigma=step_sig)
         progress("clock", {"method": clk.method, "refit": "pre-impact motion only",
                            "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})
         results = measure(movers, calib, clk, mc)
-        impacts = find_impacts() or impacts
+        impacts = events.detect_impacts(results, tracks) or impacts
     impact = impacts[0] if impacts else None
     closest = None if impact else events.closest_approach(results, tracks)
     braking, momentum, speeds = {}, None, {}
     if impact:
-        results = split_at_impact(results, movers, calib, clk, mc, impact)
+        results = split_at_impact(results, movers, calib, clk, mc, impact, post_tracks=movers_all)
         progress("physics", {"split_at_frame": impact["i"]})
         for tid in impact["tracks"]:
             braking[tid] = events.braking_onset(results[tid], impact["t"])
@@ -442,26 +512,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         keyframes, closeups = labelled_keyframes(video, shown, info.n, moment["i"] if moment else None,
                                                  focus=involved)
         near_miss = impact is None and closest is not None
-        scene = wonder.describe_scene(keyframes, statements, [t["id"] for t in shown],
-                                      involved=involved, n_closeups=len(closeups), near_miss=near_miss)
-        progress("scene", {"suggested": scene["party_to_track"]})
-        if not party:  # use the suggestion, but mark it as unconfirmed
-            sids = [s["id"] for s in statements]
-            party = {p["statement_id"]: p["track_id"] for p in scene["party_to_track"]}
-            party, notes = check_party(party, sids, involved)
-            if len(party) < len(sids) and closeups:
-                # Some statements still unmatched: ask again, showing only the
-                # close-ups of the vehicles involved, a much easier question.
-                focused = wonder.describe_scene(closeups, statements, involved, involved=involved,
-                                                n_closeups=len(closeups), near_miss=near_miss)
-                for p in focused["party_to_track"]:
-                    party.setdefault(p["statement_id"], p["track_id"])
-                party, more = check_party(party, sids, involved)
-                notes += ["asked again with close-ups only"] + more
-                scene["party_to_track_closeups"] = focused["party_to_track"]
-            if notes:
-                scene["party_checks"] = notes
-                progress("scene", {"party_checks": notes, "using": party})
+        scene, party = match_parties(wonder, keyframes, closeups, statements, [t["id"] for t in shown],
+                                     involved, near_miss, party, progress)
 
     checked = []
     ctx = {"impact_t": impact["t"] if impact else None, "closest_t": closest["t"] if closest else None,
@@ -472,7 +524,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     elif statements and party:
         from .meta import wonder
 
-        raw_claims = wonder.extract_claims(statements, party)
+        raw_claims = read_claims(wonder, statements, party, progress)
         checked = [claims_mod.evaluate(c, results, ctx) for c in raw_claims]
         progress("claims", {"verdicts": [c["verdict"] for c in checked]})
 
@@ -498,7 +550,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     case = {
         "version": 1,
         "camera_mode": inp.get("camera_mode", "fixed"),
-        "contact": {"mode": contact_mode, "per_vehicle": contact_report},
+        "contact": {"mode": contact_mode, "per_vehicle": contact_report, "occluded_frames": occluded},
         "models": _models_summary(tracks, stats, statements, scene, party, checked, report,
                                   live=tracks_override is None),
         "private_mode": config.PRIVATE_MODE,

@@ -39,22 +39,29 @@ def _img_part(img_bgr: np.ndarray, max_side: int = 1024) -> dict:
     return {"type": "image_url", "image_url": {"url": url}}
 
 
-def _chat_json(job: str, messages: list[dict], schema: dict, *, use_private: bool) -> dict:
+def _chat_json(job: str, messages: list[dict], schema: dict, *, use_private: bool,
+               temperature: float | None = None) -> dict:
     if use_private:
         client, model, label = text_client_and_model(config.WONDER_MODEL)
     else:
         client, model, label = sync_client(), config.WONDER_MODEL, config.WONDER_MODEL
-    key = cache.key_for(model, job, messages, schema)
+    key = cache.key_for(model, job, messages, schema, *([temperature] if temperature is not None else []))
     hit = cache.get_json("wonder", key)
     if hit is not None:
         with logged(label, job, cached=True):
             return hit
+    kwargs = dict(model=model, messages=cast("list[ChatCompletionMessageParam]", messages),
+                  response_format={"type": "json_schema", "json_schema": {"name": job, "schema": schema}})
     with logged(label, job):
-        resp = client.chat.completions.create(
-            model=model,
-            messages=cast("list[ChatCompletionMessageParam]", messages),
-            response_format={"type": "json_schema", "json_schema": {"name": job, "schema": schema}},
-        )
+        try:
+            resp = client.chat.completions.create(**kwargs, **({"temperature": temperature}
+                                                              if temperature is not None else {}))
+        except Exception as e:  # noqa: BLE001
+            # A model or server that rejects the temperature setting: ask without it
+            # rather than fail the case. Any other error is raised as before.
+            if temperature is None or "temperature" not in str(e).lower():
+                raise
+            resp = client.chat.completions.create(**kwargs)
     content = resp.choices[0].message.content
     if content is None:
         raise RuntimeError(f"{label} returned no content for '{job}'")
@@ -167,6 +174,11 @@ CLAIM_SCHEMA = {
                     },
                     "quantity": {
                         "type": "string",
+                        "description": (
+                            "speed_kmh: a speed (number in value_number); signal_state_at_stop_line: the "
+                            "colour of the light; braked_before_impact: whether someone braked (yes/no); "
+                            "stopped_before_impact: whether someone was standing still (yes/no)"
+                        ),
                         "enum": [
                             "speed_kmh",
                             "signal_state_at_stop_line",
@@ -181,7 +193,8 @@ CLAIM_SCHEMA = {
                     },
                     "value_text": {
                         "type": ["string", "null"],
-                        "description": "red/amber/green, or yes/no, when the value is not a number",
+                        "description": ("red/amber/green for a signal; exactly 'yes' or 'no' for braked/stopped "
+                                        "claims (what the speaker asserts); null for a speed"),
                     },
                     "when": {
                         "type": "string",
@@ -211,17 +224,24 @@ CLAIM_SCHEMA = {
 }
 
 
-def extract_claims(statements: list[dict], party_to_track: dict[str, str]) -> list[dict]:
+def extract_claims(statements: list[dict], party_to_track: dict[str, str],
+                   previous: list[dict] | None = None, problems: list[str] | None = None) -> list[dict]:
     """statements: [{"id","speaker","text"}]; party_to_track: statement id -> track id
     of the speaker's own vehicle. Claims about 'the other vehicle' should use the
-    other involved track id, listed in `involved_tracks`."""
+    other involved track id, listed in `involved_tracks`.
+
+    Temperature 0, so the same statements give the same claims. With `previous`
+    and `problems` (from claims.problems), the model is shown its earlier answer
+    and what was wrong with it, and asked for the corrected full list."""
     involved = sorted(set(party_to_track.values()))
     text = (
         "Extract every factual, checkable claim from these crash statements. Only "
         "include claims about speed, the traffic signal, braking or stopping. Keep the "
         "speaker's exact words in `quote`. Resolve 'I'/'me' to the speaker's track and "
-        "'the other vehicle' to the other involved track. Use null when no value is "
-        "stated. A signal claim is about the stop line, so its `when` is at_stop_line. "
+        "'the other vehicle' to the other involved track. ONE claim per fact: a speed, a "
+        "signal colour and a braking yes/no in the same sentence are three separate "
+        "claims. Do not output a claim that has no stated value. A signal claim is about "
+        "the stop line, so its `when` is at_stop_line. "
         "A general speed ('I was doing 30') is unspecified; use at_impact only when "
         "the speaker says 'when we hit' or similar. Statements may be in Hindi or "
         "English; quote them as given.\n\n"
@@ -232,12 +252,16 @@ def extract_claims(statements: list[dict], party_to_track: dict[str, str]) -> li
     schema = _pin(CLAIM_SCHEMA, ["properties", "claims", "items", "properties", "statement_id"],
                   [s["id"] for s in statements])
     schema = _pin(schema, ["properties", "claims", "items", "properties", "subject_track"], involved)
-    out = _chat_json(
-        "extract_claims",
-        [{"role": "user", "content": text}],
-        schema,
-        use_private=config.PRIVATE_MODE,
-    )
+    messages: list[dict] = [{"role": "user", "content": text}]
+    job = "extract_claims"
+    if previous is not None and problems:
+        job = "extract_claims_retry"
+        messages += [
+            {"role": "assistant", "content": json.dumps({"claims": previous}, ensure_ascii=False)},
+            {"role": "user", "content": "Some of these claims are malformed:\n- " + "\n- ".join(problems)
+             + "\nReturn the complete, corrected list of claims (all of them, not only the fixed ones)."},
+        ]
+    out = _chat_json(job, messages, schema, use_private=config.PRIVATE_MODE, temperature=0)
     return out["claims"]
 
 

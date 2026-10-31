@@ -41,9 +41,85 @@ def _claimed_number(claim: dict) -> float | None:
     return float(m.group()) if m else None
 
 
+_NEGATION = {"no", "not", "never", "false", "without", "didn't", "didnt", "did not", "nahi", "nahin", "na"}
+
+
+def _claimed_yes(claim: dict) -> bool:
+    """Whether a braked/stopped claim asserts YES. Models sometimes put the
+    words ("braked hard") in value_text instead of yes/no: anything without a
+    negation is a yes. No value at all also means the claim was made (yes)."""
+    text = (claim.get("value_text") or "").lower().strip()
+    if text in ("yes", "true", ""):
+        return True
+    words = set(re.findall(r"[a-z']+", text)) | ({"did not"} if "did not" in text else set())
+    return not (words & _NEGATION or "n't" in text)
+
+
+def normalize(claim: dict) -> dict:
+    """Repair a claim whose `quantity` contradicts its own value (seen live:
+    Wonder labelled "green" and "braked hard" as speed_kmh, and "did not
+    brake" as stopped_before_impact). Only claims without a stated number are
+    touched; the original label is kept in `quantity_model`."""
+    q = claim.get("quantity")
+    if _claimed_number(claim) is not None and q == "speed_kmh":
+        return claim
+    text = " ".join(str(claim.get(k) or "") for k in ("value_text", "quote")).lower().replace("_", " ")
+    value = (claim.get("value_text") or "").strip().lower().replace("_", " ")
+    fixed = q
+    if value in COLOUR:
+        fixed = "signal_state_at_stop_line"
+    elif re.search(r"\bbrak|\bbrake", text):
+        fixed = "braked_before_impact"
+    elif q == "speed_kmh" and re.search(r"\bstop|stationary|standing|ruk", text):
+        fixed = "stopped_before_impact"
+    if fixed == q:
+        return claim
+    out = {**claim, "quantity": fixed, "quantity_model": q}
+    if fixed == "signal_state_at_stop_line":
+        out["when"] = "at_stop_line"
+    return out
+
+
+_YES_NO = {"yes", "no", "true", "false"}
+
+
+def problems(claim: dict, statement_ids: list[str], tracks: list[str]) -> list[str]:
+    """What is wrong with an extracted claim, in words the model can act on.
+    Empty list = well-formed. Run after `normalize`."""
+    sid = claim.get("statement_id")
+    where = f"claim from {sid} ({claim.get('quantity')}, quote {claim.get('quote')!r})"
+    q = claim.get("quantity")
+    num = _claimed_number(claim)
+    value = (claim.get("value_text") or "").strip().lower()
+    out = []
+    if sid not in statement_ids:
+        out.append(f"{where}: unknown statement id")
+    if claim.get("subject_track") not in tracks:
+        out.append(f"{where}: subject_track must be one of {tracks}")
+    if q == "speed_kmh":
+        if num is None and not value:
+            out.append(f"{where}: a speed claim with no value; give the number, or drop the claim")
+        if value in COLOUR or value in _YES_NO:
+            out.append(f"{where}: '{value}' is not a speed; it belongs in its own claim")
+    elif q == "signal_state_at_stop_line":
+        if value not in COLOUR:
+            out.append(f"{where}: value_text must be red, amber or green")
+        if claim.get("value_number") is not None:
+            out.append(f"{where}: a number on a signal claim; put a stated speed in its own speed claim")
+    elif q in ("braked_before_impact", "stopped_before_impact"):
+        if not value:
+            out.append(f"{where}: value_text must be 'yes' or 'no', or drop the claim if nothing is stated")
+        if claim.get("value_number") is not None:
+            out.append(f"{where}: a number on a {q} claim; put a stated speed in its own speed claim")
+    return out
+
+
 def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
     """ctx: {"impact_t", "signal_changes", "stop_line", "braking": {track: {...}}}"""
     out = {**claim, "verdict": "cant_tell", "measured": None, "reason": ""}
+    if claim.get("unreadable"):  # never give a verdict on a claim we could not read
+        out["reason"] = "could not read this claim reliably: " + "; ".join(claim["unreadable"])
+        return out
     res = results.get(claim["subject_track"])
     if res is None:
         out["reason"] = "the footage does not track this road user"
@@ -111,7 +187,7 @@ def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
         if b is None:
             out["reason"] = "no impact detected for this road user"
             return out
-        claimed_yes = (claim.get("value_text") or "yes").lower() in ("yes", "true")
+        claimed_yes = _claimed_yes(claim)
         if q == "braked_before_impact":
             out["measured"] = b
             out["verdict"] = "consistent" if claimed_yes == b["detected"] else "inconsistent"

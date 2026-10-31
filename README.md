@@ -260,3 +260,8 @@ signal changes), `signals`, `statements`, `party_to_track`, `scene`, `claims`,
 
 Only simulator output, our own recordings, and datasets whose terms allow this
 use. See `THIRD_PARTY_NOTICES.md`.
+
+
+
+## form me: carla: cd /home/raghav-maheshwari/Raghav/MetaAIhack/CARLA/CARLA_0.9.16
+./CarlaUE4.sh -RenderOffScreen -quality-level=Low -prefernvidia -nosound

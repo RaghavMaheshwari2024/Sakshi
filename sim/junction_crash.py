@@ -113,14 +113,53 @@ def set_colour(blueprint, rgb: str) -> bool:
     return False
 
 
-def spawn_traffic(client, world, bp_lib, cp, n: int, rng, port: int = 8000):
-    """n other cars on autopilot, spawned 40-150 m from the junction."""
+def get_traffic_manager(client, ports=range(8100, 8111)):
+    """A Traffic Manager on the first free port. Its default port, 8000, is also
+    where uvicorn serves the Sakshi API, and a Traffic Manager from an earlier
+    run can still hold a port: 'bind error'."""
+    last = None
+    for port in ports:
+        try:
+            return client.get_trafficmanager(port), port
+        except RuntimeError as e:  # port in use
+            last = e
+    raise RuntimeError(f"no free port for the Traffic Manager in {ports.start}-{ports.stop - 1}: {last}")
+
+
+def clear_world(client, world):
+    """Remove vehicles, walkers and sensors left by an earlier run that crashed
+    before cleaning up (they block the spawn points: 'collision at spawn position').
+    This server is only used for these renders."""
+    old = [a for pat in ("vehicle.*", "walker.*", "sensor.*", "controller.*") for a in world.get_actors().filter(pat)]
+    if old:
+        client.apply_batch_sync([carla.command.DestroyActor(a.id) for a in old], True)
+        print(f"Removed {len(old)} actors left over from an earlier run.")
+
+
+def _approach_lanes(*entries, back_m=(5.0, 20.0, 40.0, 60.0)):
+    """(road, lane) ids of the lanes leading into each junction entry."""
+    out = set()
+    for e in entries:
+        for d in back_m:
+            for w in e.previous(d):
+                if not w.is_junction:
+                    out.add((w.road_id, w.lane_id))
+    return out
+
+
+def spawn_traffic(client, world, bp_lib, cp, n: int, rng, keep_clear=()):
+    """n other cars on autopilot, spawned 40-150 m from the junction, but not
+    in the lanes A and B approach on (a car there ends up between them, and A
+    hits it instead of B: 'invalid render')."""
     if n <= 0:
         return [], None
-    tm = client.get_trafficmanager(port)
+    tm, port = get_traffic_manager(client)
     tm.set_synchronous_mode(True)
     tm.set_random_device_seed(rng.randint(0, 9999))
-    points = [sp for sp in world.get_map().get_spawn_points() if 40 < sp.location.distance(cp) < 150]
+    m = world.get_map()
+    blocked = _approach_lanes(*keep_clear)
+    points = [sp for sp in m.get_spawn_points() if 40 < sp.location.distance(cp) < 150
+              and (lambda w: (w.road_id, w.lane_id) not in blocked)(m.get_waypoint(sp.location))]
     rng.shuffle(points)
     cars = [b for b in bp_lib.filter("vehicle.*")
             if b.has_attribute("number_of_wheels") and int(b.get_attribute("number_of_wheels")) == 4]
@@ -187,6 +226,7 @@ def main():
     world.apply_settings(settings)
     bp = world.get_blueprint_library()
     actors, tm = [], None
+    clear_world(client, world)
     try:
         junction, e1, e2, lights = pick_junction(world, rng)
         cp = conflict_point(e1, e2)
@@ -261,7 +301,7 @@ def main():
             L.set_state(carla.TrafficLightState.Red)
         light_a.set_state(carla.TrafficLightState.Green)
 
-        traffic, tm = spawn_traffic(client, world, bp, cp, args.traffic, rng)
+        traffic, tm = spawn_traffic(client, world, bp, cp, args.traffic, rng, keep_clear=(e1, e2))
         actors += traffic
 
         for _ in range(10):  # let the vehicles settle on the road
@@ -365,11 +405,15 @@ def main():
         if not valid:
             raise SystemExit(2)
     finally:
-        for a in actors:
-            try:
-                a.destroy()
-            except RuntimeError:
-                pass
+        # Destroy in one synchronous batch (and let the server tick) so nothing
+        # is left behind to block the next render's spawn points.
+        try:
+            for a in actors:
+                if a.type_id.startswith("sensor."):
+                    a.stop()
+            client.apply_batch_sync([carla.command.DestroyActor(a.id) for a in actors], True)
+        except RuntimeError:
+            pass
         if tm is not None:
             tm.set_synchronous_mode(False)
         settings.synchronous_mode = False
