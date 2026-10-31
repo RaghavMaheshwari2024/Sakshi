@@ -381,7 +381,7 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
 
   return (
     <div
-      className={`bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 text-zinc-100 flex flex-col select-none relative backdrop-blur ${className}`}
+      className={`bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 text-zinc-100 flex flex-col select-none relative backdrop-blur h-full ${className}`}
     >
       {/* Top Header: Panel Title, Units & Interactivity Legend */}
       <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-zinc-800/80 mb-2">
@@ -532,7 +532,7 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
       {/* Main SVG Chart Container */}
       <div
         ref={containerRef}
-        className="relative w-full flex-1 min-h-[200px] h-[250px] bg-zinc-950/80 rounded border border-zinc-800/90 overflow-hidden cursor-crosshair"
+        className="relative w-full flex-1 min-h-[190px] bg-zinc-950/80 rounded border border-zinc-800/90 overflow-hidden cursor-crosshair"
       >
         <svg
           ref={svgRef}
