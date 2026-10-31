@@ -451,12 +451,12 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     # Only road users are measured (not traffic lights, not vehicle parts).
     movers = [t for t in tracks if t["concept"] in events.MOVERS]
-    refine_ticks = clk_ticks if clk.method == "clock_ticks" and inp.get("clock_mode") != "ticks_only" else None
-    if refine_ticks:
+    refine = clk.method == "clock_ticks" and clk_ticks and inp.get("clock_mode") != "ticks_only"
+    if refine:
         # Drop-aware refinement: the vehicles' own motion shows where frames were lost.
         steps, step_sig = step_displacements(tracks, calib, info.n)
         clk_ticked = clk
-        clk = clock_mod.refine_with_motion(info.n, refine_ticks, info.fps, steps, clk.duplicate, step_sigma=step_sig)
+        clk = clock_mod.refine_with_motion(info.n, clk_ticks, info.fps, steps, clk.duplicate, step_sigma=step_sig)
         progress("clock", {"method": clk.method,
                            "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})
 
@@ -464,12 +464,12 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     progress("physics", {"measured_tracks": list(results)})
 
     impacts = events.detect_impacts(results, tracks)
-    if impacts and refine_ticks:
+    if impacts and refine:
         # After contact, motion is violent and no longer smooth, so it would read
         # as fake dropped frames: refit the clock from pre-impact motion only.
         i_imp = impacts[0]["i"]
         steps_pre = {k: np.where(np.arange(info.n) < i_imp, v, np.nan) for k, v in steps.items()}
-        clk = clock_mod.refine_with_motion(info.n, refine_ticks, info.fps, steps_pre, clk_ticked.duplicate,
+        clk = clock_mod.refine_with_motion(info.n, clk_ticks, info.fps, steps_pre, clk_ticked.duplicate,
                                            step_sigma=step_sig)
         progress("clock", {"method": clk.method, "refit": "pre-impact motion only",
                            "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})
@@ -488,6 +488,10 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
                 "at_impact": events.window_speed(results[tid], impact["t"] - 0.25, impact["t"] - 0.05),
             }
         momentum = events.momentum_check(impact, results, tracks)
+    elif closest:  # near miss: the same speed windows, around the closest approach
+        for tid in closest["tracks"]:
+            speeds[tid] = {"just_before_closest_approach":
+                           events.window_speed(results[tid], closest["t"] - 1.2, closest["t"] - 0.2)}
     progress("events", {"impact": impact, "momentum": momentum, "closest_approach": closest})
 
     sig = signal_timeline(video, tracks, clk, progress, offline=tracks_override is not None, stats=stats)
@@ -542,6 +546,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         "momentum_check": momentum,
         "signal_changes": main_light,
         "signal_track": signal_track,
+        "signal_note": signal_note,
         "claims": [{k: c[k] for k in ("statement_id", "quote", "verdict", "reason", "measured")} for c in checked],
         "clock_method": clk.method,
         "calibration_rms_m": round(calib.rms_err_m, 3),

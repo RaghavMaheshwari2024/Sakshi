@@ -273,10 +273,8 @@ REPORT_SCHEMA = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "3 to 6 plain sentences for a non-expert"},
-        "limitations": {"type": "array", "items": {"type": "string"},
-                        "description": "what the footage or method cannot establish"},
     },
-    "required": ["summary", "limitations"],
+    "required": ["summary"],
     "additionalProperties": False,
 }
 
@@ -299,8 +297,12 @@ def fact_lines(facts: dict) -> tuple[list[str], list[str]]:
     if imp:
         timeline.append(f"t = {imp['t']} s: impact between {imp['tracks'][0]} and {imp['tracks'][1]} "
                         f"(timing uncertainty about {imp['t_sigma']} s).")
+    ca = facts.get("closest_approach")
+    if ca and not imp:
+        timeline.append(f"t = {ca['t']} s: closest approach between {ca['tracks'][0]} and {ca['tracks'][1]}, "
+                        f"{ca['gap_m']} m apart; no impact.")
     for tid, sp in (facts.get("speeds") or {}).items():
-        w = sp.get("just_before_impact")
+        w = sp.get("just_before_impact") or sp.get("just_before_closest_approach")
         if w:
             timeline.append(f"{tid}: {w['kmh']} km/h (90% interval {w['lo90']} to {w['hi90']}) "
                             f"from t = {w['t0']} to {w['t1']} s.")
@@ -308,6 +310,49 @@ def fact_lines(facts: dict) -> tuple[list[str], list[str]]:
     findings = [f"{c['statement_id']}: \"{c['quote']}\": {VERDICT_WORDS.get(c['verdict'], c['verdict'])}. "
                 f"{c['reason'][:1].upper() + c['reason'][1:]}." for c in facts.get("claims") or []]
     return timeline, findings
+
+CLOCK_WORDS = {
+    "clock_ticks+motion": "Frame times come from the burned-in clock; frames the recorder dropped were "
+                          "placed using the vehicles' own motion.",
+    "clock_ticks": "Frame times come from the burned-in clock; where dropped frames fall within each "
+                   "second is not known, which the speed intervals include.",
+    "container_pts": "Frame times come from the video file's own timestamps (no burned-in clock).",
+    "container_pts_even": "No burned-in clock and evenly spaced file timestamps: frames the recorder "
+                          "dropped cannot be seen, so the speed intervals allow speeds up to about 20% "
+                          "higher than the file suggests.",
+    "nominal_fps": "No burned-in clock and no usable file timestamps: frame times assume the nominal "
+                   "frame rate, and the speed intervals allow up to about 20% dropped frames.",
+}
+
+
+def limitation_lines(facts: dict) -> list[str]:
+    """The report's limitations, written by code from the facts. (Left to the
+    model they were once invented: 'the evaluation was conducted by skilled and
+    experienced personnel'. A forensic report must not contain that.)"""
+    out = [CLOCK_WORDS.get(facts.get("clock_method"), f"Clock method: {facts.get('clock_method')}.")]
+    if facts.get("calibration_rms_m") is not None:
+        out.append(f"Road calibration error: {facts['calibration_rms_m']} m (how well the clicked road "
+                   "points fit a flat road); positions assume a flat road.")
+    if not facts.get("impact"):
+        ca = facts.get("closest_approach")
+        out.append("No impact found in the footage" + (
+            f": speeds are measured around the closest approach (t = {ca['t']} s, {ca['gap_m']} m apart)."
+            if ca else "."))
+    else:
+        status = (facts.get("momentum_check") or {}).get("status")
+        if status and status != "consistent":
+            out.append("The momentum check after the impact did not balance (" + status + "): after contact "
+                       "the vehicles overlap in the image, so post-impact motion is not reliable. Speeds "
+                       "before the impact are measured separately and are not affected.")
+    if not facts.get("signal_changes"):
+        note = facts.get("signal_note") or "no traffic light was read"
+        out.append(f"Traffic-light claims cannot be checked: {note}.")
+    unread = [c for c in facts.get("claims") or [] if str(c.get("reason", "")).startswith("could not read")]
+    if unread:
+        out.append(f"{len(unread)} claim(s) could not be read reliably from the statements and were not checked.")
+    out.append("Measurements come from one camera; they support expert review and do not determine fault.")
+    return out
+
 
 _NUM = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
 
@@ -346,16 +391,15 @@ def unsupported_numbers(report: dict, facts: dict) -> list[str]:
 
 def write_report(facts: dict) -> dict:
     """`facts` holds only engine outputs (speeds with intervals, times, verdicts).
-    The timeline and claim findings are written by code (`fact_lines`); Muse
-    Wonder writes the plain-language summary and the limitations, and every
-    number it uses is checked against the facts."""
+    The timeline, claim findings and limitations are written by code
+    (`fact_lines`, `limitation_lines`); Muse Wonder writes only the
+    plain-language summary, and every number in it is checked against the facts."""
     timeline, findings = fact_lines(facts)
     base = (
         "You are writing the summary of a crash-reconstruction report for a surveyor, "
         "insurer or lawyer. The measured timeline and the claim findings below are "
-        "already written; summarise them in 3 to 6 plain sentences, then list the "
-        "limitations (for example: what the footage cannot show, the clock method, a "
-        "failed momentum check, a claim that cannot be checked).\n"
+        "already written; summarise them in 3 to 6 plain sentences. Do not list "
+        "limitations or assumptions: those are written separately.\n"
         "Rules: use only numbers that appear below, copied exactly; give a speed only "
         "with its 90% interval; never say who is at fault or whether a law was broken; "
         "do not add events, places or road users that are not listed.\n\n"
@@ -379,6 +423,11 @@ def write_report(facts: dict) -> dict:
         ]
         report = _chat_json("write_report_retry", messages, REPORT_SCHEMA, use_private=config.PRIVATE_MODE)
         bad = unsupported_numbers(report, facts)
+    # Only the summary is the model's. Drop anything it appended after it
+    # (a "Limitations:" block was seen); limitations are written by code.
+    report["summary"] = re.split(r"\n\s*(?:limitations|assumptions)\s*:", report["summary"],
+                                 flags=re.IGNORECASE)[0].strip()
+    report["limitations"] = limitation_lines(facts)
     report["timeline"], report["claim_findings"] = timeline, findings
     report["validator"] = {"passed": not bad, "unsupported_numbers": bad}
     return report

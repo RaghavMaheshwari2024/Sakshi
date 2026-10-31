@@ -246,3 +246,23 @@ def test_third_statement_from_outside_the_collision_is_kept():
     # Still one vehicle per statement.
     party, _ = check_party({"s1": "car-0", "s2": "car-1", "s3": "car-1"}, ["s1", "s2", "s3"], ["car-0", "car-1"])
     assert "s3" not in party
+
+
+def test_report_limitations_are_written_by_code(monkeypatch):
+    # Seen live (near_miss): Wonder's limitations included "the evaluation of the
+    # footage was conducted by skilled and experienced personnel", and its
+    # summary carried its own "Limitations:" block.
+    from sakshi.meta import wonder
+
+    facts = {"impact": None, "closest_approach": {"tracks": ["car-0", "car-1"], "t": 4.768, "gap_m": 8.31},
+             "speeds": {}, "braking": {},
+             "momentum_check": None, "signal_changes": [], "signal_track": None,
+             "signal_note": "5 traffic lights in view; choose which one governs the stop line",
+             "claims": [], "clock_method": "clock_ticks+motion", "calibration_rms_m": 0.433}
+    reply = {"summary": "No impact; the white car was faster than claimed.\n\nLimitations:\n- fact, skilled personnel"}
+    monkeypatch.setattr(wonder, "_chat_json", lambda *a, **k: dict(reply))
+    r = wonder.write_report(facts)
+    assert "Limitations" not in r["summary"] and "personnel" not in " ".join(r["limitations"])
+    text = " ".join(r["limitations"])
+    assert "closest approach" in text and "Traffic-light claims cannot be checked" in text
+    assert r["validator"]["passed"]
