@@ -128,6 +128,23 @@ def _statements(gt, args):
     v1, v2 = _true_speed(gt, "A", *win), _true_speed(gt, "B", *win)
     c1 = args.claim_a if args.claim_a is not None else max(10, 5 * round(v1 * 0.6 / 5))
     c2 = max(5, round(v2))
+    if kind == "chain":
+        # A runs into B standing at the red light and pushes it into C. Three
+        # drivers speak; Sakshi analyses the first collision (A-B) only, so C's
+        # claim may honestly be "can't tell".
+        s1 = f"I was driving the white car at about {c1:g}."
+        s2 = f"Main {b_desc} mein signal pe ruka hua tha. Peeche se white car ne zor se maara."
+        s3 = "Main grey car mein sabse aage signal pe ruki hui thi, peeche se dhakka laga."
+        exp = [{"statement_id": "s1", "quantity": "speed_kmh", "subject": "A", "claimed": c1,
+                "true": round(v1, 1), "expected": _speed_verdict(c1, v1)},
+               {"statement_id": "s2", "quantity": "stopped_before_impact", "subject": "B", "claimed": "yes",
+                "true": "yes", "expected": "consistent"},
+               {"statement_id": "s3", "quantity": "stopped_before_impact", "subject": "C", "claimed": "yes",
+                "true": "yes", "expected": "consistent", "acceptable": ["cant_tell"]}]
+        statements = [{"id": "s1", "speaker": "Driver of the white car", "text": s1},
+                      {"id": "s2", "speaker": f"Driver of the {b_desc}", "text": s2},
+                      {"id": "s3", "speaker": "Driver of the grey car", "text": s3}]
+        return statements, exp
     s1 = f"I was driving the white car at about {c1:g}"
     exp = [{"statement_id": "s1", "quantity": "speed_kmh", "subject": "A", "claimed": c1,
             "true": round(v1, 1), "expected": _speed_verdict(c1, v1)}]

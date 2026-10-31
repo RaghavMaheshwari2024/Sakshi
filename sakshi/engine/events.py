@@ -42,6 +42,29 @@ def _closing_speed(ra: TrackResult, ka: int, rb: TrackResult, kb: int) -> float:
     return float(-(d @ (ra.nominal.vel[ka] - rb.nominal.vel[kb])) / n)
 
 
+def _mean_vel(r: TrackResult, t0: float, t1: float) -> np.ndarray | None:
+    m = (r.nominal.t >= t0) & (r.nominal.t <= t1)
+    return r.nominal.vel[m].mean(0) if m.sum() >= 3 else None
+
+
+def motion_changed(ra: TrackResult, rb: TrackResult, t: float, before=(0.6, 0.15), after=(0.25, 0.8),
+                   min_ms: float = 1.5, share: float = 0.3) -> bool | None:
+    """Did contact at t change how the two move? A collision always does: the
+    struck vehicle is pushed, the striking one slows, their relative velocity
+    collapses. Two vehicles that only pass close (oncoming cars in adjacent
+    lanes) carry on exactly as before. True if either velocity, or the relative
+    velocity, changes by at least `share` of the closing speed before contact
+    (and at least `min_ms`). None if there is too little footage after t to tell."""
+    va0, vb0 = _mean_vel(ra, t - before[0], t - before[1]), _mean_vel(rb, t - before[0], t - before[1])
+    va1, vb1 = _mean_vel(ra, t + after[0], t + after[1]), _mean_vel(rb, t + after[0], t + after[1])
+    if va0 is None or vb0 is None or va1 is None or vb1 is None:
+        return None
+    rel0 = float(np.linalg.norm(va0 - vb0))
+    change = max(float(np.linalg.norm(va1 - va0)), float(np.linalg.norm(vb1 - vb0)),
+                 float(np.linalg.norm((va1 - vb1) - (va0 - vb0))))
+    return change >= max(min_ms, share * rel0)
+
+
 def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
                    max_gap_m: float = 4.5, min_closing_ms: float = 1.0,
                    lookback_s: float = 0.6) -> list[dict]:
@@ -49,7 +72,13 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
     positions are within `max_gap_m`, AND they were closing on each other at
     `min_closing_ms` or more in the `lookback_s` before. The closing test rejects
     vehicles that only look close: side by side in adjacent lanes, or one
-    following another at the same speed, never close the gap."""
+    following another at the same speed, never close the gap.
+
+    A candidate is then confirmed by `motion_changed`: oncoming vehicles passing
+    in adjacent lanes DO close the gap fast, but neither is pushed or slowed,
+    so they are not an impact (the search goes on for a later, real one). With
+    too little footage after the candidate to tell, it is kept and marked
+    `confirmed: null`."""
     by_id = {t["id"]: t for t in tracks}
     impacts = []
     ids = [i for i in results if by_id[i]["concept"] in MOVERS]
@@ -72,10 +101,13 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
             recent = [c for c, tc in closing.values() if t_i - lookback_s <= tc <= t_i]
             if gap <= max_gap_m and recent and max(recent) >= min_closing_ms:
                 t = float(ra.nominal.t[ka])
+                confirmed = motion_changed(ra, rb, t)
+                if confirmed is False:
+                    continue  # they only passed close
                 dt = float(np.median(np.diff(ra.nominal.t))) if len(ra.nominal.t) > 1 else 0.04
                 impacts.append(
                     {"type": "impact", "tracks": [a, b], "i": int(i), "t": round(t, 3),
-                     "t_sigma": round(dt, 3), "ground_gap_m": round(gap, 2),
+                     "t_sigma": round(dt, 3), "ground_gap_m": round(gap, 2), "confirmed": confirmed,
                      "xy": np.round((ra.nominal.pos[ka] + rb.nominal.pos[kb]) / 2, 2).tolist()}
                 )
                 break

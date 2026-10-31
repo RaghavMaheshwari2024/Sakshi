@@ -35,7 +35,7 @@ def _match_tracks(case, gt_by_i) -> dict[str, str]:
     mapping = {}
     for traj in case["trajectories"]:
         best = None
-        for name in ("A", "B"):
+        for name in [k for k in ("A", "B", "C", "D") if k in next(iter(gt_by_i.values()))]:
             d = [np.hypot(x - gt_by_i[i][name]["x"], y - gt_by_i[i][name]["y"])
                  for i, x, y in zip(traj["i"], traj["x"], traj["y"]) if i in gt_by_i]
             if d and (best is None or np.mean(d) < best[1]):
@@ -88,7 +88,7 @@ def main(case_dir: str | Path, mapping: dict[str, str] | None = None, quiet: boo
         report["dropped_frames"] = {"inferred": case["clock"].get("dropped_frames_inferred"), "true": true_drops}
     for traj in case["trajectories"]:
         name = mapping.get(traj["track"])
-        if not name or t_ref is None:
+        if name not in ("A", "B") or t_ref is None:
             continue
         # "last_2s": where every claim is checked (the approach to the impact or
         # closest approach). "approach": everything from 0.4 s in. After contact a
@@ -105,11 +105,12 @@ def main(case_dir: str | Path, mapping: dict[str, str] | None = None, quiet: boo
                 continue
             a = np.array([(r[0], r[1]) for r in rows])
             err = a[:, 1] - a[:, 0]
+            moving = a[:, 0] >= 5.0  # % error is meaningless for a vehicle standing still
             report["vehicles"].setdefault(traj["track"], {"vehicle": name})[label] = {
                 "frames_scored": len(rows),
                 "mae_kmh": round(float(np.abs(err).mean()), 2),
-                "mape_pct": round(float((np.abs(err) / np.maximum(a[:, 0], 1)).mean() * 100), 2),
-                "bias_pct": round(float((err / np.maximum(a[:, 0], 1)).mean() * 100), 2),
+                "mape_pct": round(float((np.abs(err[moving]) / a[moving, 0]).mean() * 100), 2) if moving.any() else None,
+                "bias_pct": round(float((err[moving] / a[moving, 0]).mean() * 100), 2) if moving.any() else None,
                 "interval_coverage_pct": round(100 * np.mean([r[2] for r in rows]), 1),
             }
     found = case["events"][0] if case["events"] else None
@@ -128,8 +129,14 @@ def main(case_dir: str | Path, mapping: dict[str, str] | None = None, quiet: boo
         # alone; how far our clock is off at that frame is reported separately.
         g = gt_by_i.get(found["i"])
         t_true = g["t"] if g else found["t"]
-        report["impact"] = {"outcome": "detected", "t_error_s": round(t_true - gt["t_impact"], 3),
-                            "clock_error_s": round(found["t"] - t_true, 3), "method": found.get("method")}
+        pair = sorted(mapping.get(tid, "?") for tid in found["tracks"])
+        report["impact"] = {"outcome": "detected" if pair == ["A", "B"] else f"WRONG PAIR {'-'.join(pair)}",
+                            "t_error_s": round(t_true - gt["t_impact"], 3),
+                            "clock_error_s": round(found["t"] - t_true, 3), "confirmed": found.get("confirmed")}
+        if len(case["events"]) > 1 or gt.get("second_impact"):
+            report["impact"]["other_events"] = [sorted(mapping.get(x, "?") for x in e["tracks"])
+                                                for e in case["events"][1:]]
+            report["impact"]["true_second_impact"] = gt.get("second_impact")
     report["signal_changes"] = {"measured": case["facts"]["signal_changes"], "truth": gt.get("signal_changes")}
     report.update(_score_claims(case, gt, mapping))
     if "expected_verdicts" in gt:  # the synthetic case

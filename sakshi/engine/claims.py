@@ -185,7 +185,8 @@ def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
     if q in ("braked_before_impact", "stopped_before_impact"):
         b = (ctx.get("braking") or {}).get(claim["subject_track"])
         if b is None:
-            out["reason"] = "no impact detected for this road user"
+            out["reason"] = ("this road user is not in the collision Sakshi analysed (the first one in the "
+                             "footage)" if ctx.get("impact_t") is not None else "no impact detected for this road user")
             return out
         claimed_yes = _claimed_yes(claim)
         if q == "braked_before_impact":

@@ -235,3 +235,14 @@ def test_temperature_rejected_by_the_server_falls_back(monkeypatch):
     monkeypatch.setattr(wonder, "logged", lambda *a, **k: contextlib.nullcontext())
     assert wonder.extract_claims(STATEMENTS, PARTY) == []
     assert len(calls) == 2 and calls[0]["temperature"] == 0 and "temperature" not in calls[1]
+
+
+def test_third_statement_from_outside_the_collision_is_kept():
+    # Chain collision: three drivers, the measured collision has two vehicles.
+    from sakshi.pipeline import check_party
+
+    party, notes = check_party({"s1": "car-0", "s2": "car-1", "s3": "car-2"}, ["s1", "s2", "s3"], ["car-0", "car-1"])
+    assert party == {"s1": "car-0", "s2": "car-1", "s3": "car-2"} and notes
+    # Still one vehicle per statement.
+    party, _ = check_party({"s1": "car-0", "s2": "car-1", "s3": "car-1"}, ["s1", "s2", "s3"], ["car-0", "car-1"])
+    assert "s3" not in party

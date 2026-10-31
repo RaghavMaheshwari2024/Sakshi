@@ -58,6 +58,14 @@ SCENARIOS: dict[str, tuple[str, list[str] | str, list[str]]] = {
     "junction2": ("another junction and approach pair", ["--seed", "2", "--cam-side", "4"], []),
     "high_camera": ("camera higher and further away (18 m up, 25 m beyond)",
                     ["--cam-side", "4", "--cam-height", "18", "--cam-ahead", "25"], []),
+    # Held-out (Oct 31): designed after the 16 above passed. Experimental: see EXPERIMENTAL.
+    "crowded": ("HELD-OUT: crash with an oncoming grey car passing A just before it and a red car waiting",
+                ["--cam-side", "4", "--kind", "crowded"], []),
+    # Re-rendered once: the first chain camera (11 m up, 15 m beyond the junction)
+    # saw the three cars end-on 30-40 m away, hiding each other: impact MISSED
+    # (kept in the README as a known limit). This camera is 20 m above the junction.
+    "chain": ("HELD-OUT: A runs into B at the red light and pushes it into C (two collisions)",
+              ["--kind", "chain", "--cam-ahead", "0", "--cam-side", "3", "--cam-height", "20", "--look-at", "crash"], []),
     "low_res": ("base footage at 640x360, heavy compression", "from:base", ["--scale", "0.5", "--crf", "36"]),
     "heavy_drops": ("base footage with 25% of frames dropped", "from:base", ["--drop", "0.25"]),
     "no_drops": ("base footage with no dropped or duplicated frames", "from:base", ["--drop", "0", "--dup", "0"]),
@@ -65,6 +73,10 @@ SCENARIOS: dict[str, tuple[str, list[str] | str, list[str]]] = {
 }
 
 SUITE_CONCEPTS = "car,motorcycle,traffic light"  # no pedestrians in these scenes
+
+# Multi-car scenes whose CARLA set-up is not finished (the planned crash does not
+# render cleanly). Not run by default; run them by name with --only.
+EXPERIMENTAL = {"crowded", "chain"}
 
 
 def sh(cmd: list[str], log: Path, env=None) -> int:
@@ -149,9 +161,12 @@ def row(name: str, variant: str, what: str, ev: dict, note: str = "") -> dict:
     drops = ev.get("dropped_frames") or {}
     r["drops_inferred/true"] = f"{drops.get('inferred')}/{drops.get('true')}" if drops else ""
     r["clock"] = ev.get("clock_method", "")
+    if imp.get("other_events"):
+        note = (note + f" also found: {imp['other_events']}").strip()
+    if imp.get("true_second_impact"):
+        note = (note + f" (true 2nd impact B-C at {imp['true_second_impact']['t']:.2f} s)").strip()
     wrong = [c["claim"] for c in ev.get("claims", []) if c["outcome"] == "WRONG"]
-    if wrong:
-        r["note"] = (note + " wrong: " + "; ".join(wrong)).strip()
+    r["note"] = (note + (" wrong: " + "; ".join(wrong) if wrong else "")).strip()
     return r
 
 
@@ -188,7 +203,7 @@ def main():
         for n, (w, spec, dargs) in SCENARIOS.items():
             print(f"{n:<12} {w}")
         return
-    names = [n for n in (a.only.split(",") if a.only else SCENARIOS) if n]
+    names = [n for n in (a.only.split(",") if a.only else [k for k in SCENARIOS if k not in EXPERIMENTAL]) if n]
     unknown = [n for n in names if n not in SCENARIOS]
     if unknown:
         sys.exit(f"Unknown scenario(s): {unknown}. See --list.")

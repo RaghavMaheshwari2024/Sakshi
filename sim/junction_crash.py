@@ -3,14 +3,18 @@ camera, with exact ground truth logged every frame.
 
 Kinds (--kind): t_bone (A hits B's side), rear_end (A runs into B ahead in the
 same lane), near_miss (B clears the junction --miss-gap s before A: there must
-be NO impact). Variations: --b-vehicle motorcycle, --brake-decel/--brake-before
+be NO impact), crowded (t_bone, plus a grey car C coming the other way that
+passes A one lane over shortly before the crash, and a red car D waiting at the
+red light across the junction: neither may be reported as an impact), chain (B
+and C stand at the red light in A's lane, A runs into B and pushes it into C:
+two collisions; Sakshi analyses the first). Variations: --b-vehicle motorcycle, --brake-decel/--brake-before
 (A brakes before the hit), --weather (e.g. ClearNight, HardRainNoon),
 --traffic N (other cars driving around).
 
 Needs a running CARLA server (0.9.13+; tested API surface is stable from 0.9.11):
   ./CarlaUE4.sh -RenderOffScreen            # on the GPU machine or a Modal GPU box
   python sim/junction_crash.py --out cases/carla_001 --v1 50 --v2 30 --seed 1
-  (options: --town Town10HD_Opt --cam-ahead 15 --cam-side 8 --cam-height 11 --fov 90)
+  (options: --town Town10HD_Opt --cam-ahead 15 --cam-side 8 --cam-height 11 --fov 90 --look-at junction)
 Start CARLA on the map you render (switching maps can crash CARLA on laptops).
 
 Writes:
@@ -45,8 +49,9 @@ FPS = 25
 W, H = 1280, 720
 
 
-def pick_junction(world, rng):
-    """A signalised junction with two roughly perpendicular entry lanes."""
+def pick_junction(world, rng, need=None):
+    """A signalised junction with two roughly perpendicular entry lanes
+    (and, if given, for which need(e1, e2) is true)."""
     m = world.get_map()
     seen = set()
     options = []
@@ -66,6 +71,15 @@ def pick_junction(world, rng):
                 d = abs((e1.transform.rotation.yaw - e2.transform.rotation.yaw + 180) % 360 - 180)
                 if 75 < d < 105:
                     options.append((j, e1, e2, lights))
+    if need is not None:
+        ok = []
+        for o in options:
+            try:
+                if need(o[1], o[2]):
+                    ok.append(o)
+            except RuntimeError:
+                pass
+        options = ok
     if not options:
         raise RuntimeError("No suitable signalised junction in this map; try Town03 or Town05.")
     return rng.choice(options)
@@ -174,11 +188,38 @@ def spawn_traffic(client, world, bp_lib, cp, n: int, rng, keep_clear=()):
     return spawned, tm
 
 
+def opposite_lane(wp, max_steps: int = 4):
+    """The nearest driving lane to the left that runs the other way, or None."""
+    w = wp
+    for _ in range(max_steps):
+        w = w.get_left_lane()
+        if w is None:
+            return None
+        if w.lane_type == carla.LaneType.Driving and w.lane_id * wp.lane_id < 0:
+            return w
+    return None
+
+
+def find_blueprint(bp_lib, names, fallback="vehicle.audi.a2"):
+    for name in names:
+        try:
+            return bp_lib.find(name)
+        except (IndexError, RuntimeError):
+            continue
+    return bp_lib.find(fallback)
+
+
+def _row(v):
+    tf, vel = v.get_transform(), v.get_velocity()
+    return {"x": tf.location.x, "y": tf.location.y, "z": tf.location.z, "yaw": tf.rotation.yaw,
+            "speed_kmh": 3.6 * math.hypot(vel.x, vel.y)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--town", default="Town10HD_Opt", help="CARLA's default map: no map switch needed")
-    ap.add_argument("--kind", default="t_bone", choices=["t_bone", "rear_end", "near_miss"])
+    ap.add_argument("--kind", default="t_bone", choices=["t_bone", "rear_end", "near_miss", "crowded", "chain"])
     ap.add_argument("--v1", type=float, default=50.0, help="vehicle A (white car) speed, km/h")
     ap.add_argument("--v2", type=float, default=30.0, help="vehicle B speed, km/h")
     ap.add_argument("--b-vehicle", default="car", choices=["car", "motorcycle"])
@@ -197,6 +238,8 @@ def main():
     ap.add_argument("--cam-side", type=float, default=8.0, help="camera offset away from B's side of the road, m")
     ap.add_argument("--cam-height", type=float, default=11.0, help="camera height above the road, m")
     ap.add_argument("--fov", type=float, default=90.0, help="horizontal field of view, degrees (CCTV is often 90+)")
+    ap.add_argument("--look-at", default="junction", choices=["junction", "crash"],
+                    help="aim the camera at the junction centre, or at the queue (chain)")
     args = ap.parse_args()
     rng = random.Random(args.seed)
     out = Path(args.out)
@@ -208,6 +251,8 @@ def main():
     tb = args.brake_before if a_brake else 0.0
     if args.v1 / 3.6 - a_brake * tb <= 0.5:
         raise SystemExit("A would stop before the impact: lower --brake-decel or --brake-before.")
+    if args.kind == "chain" and a_brake:
+        raise SystemExit("chain does not support --brake-decel.")
 
     client = carla.Client(args.host, 2000)
     client.set_timeout(180.0)  # loading a map can take minutes on a laptop GPU
@@ -228,7 +273,9 @@ def main():
     actors, tm = [], None
     clear_world(client, world)
     try:
-        junction, e1, e2, lights = pick_junction(world, rng)
+        # crowded needs an oncoming lane next to A's (for the passing car C).
+        need = (lambda a, b: opposite_lane(back_off(a, 2.0)) is not None) if args.kind == "crowded" else None
+        junction, e1, e2, lights = pick_junction(world, rng, need)
         cp = conflict_point(e1, e2)
         v1, v2 = args.v1 / 3.6, args.v2 / 3.6
         # Distance A's centre covers before the planned impact (with braking).
@@ -236,6 +283,7 @@ def main():
         dB = v2 * args.lead
         dist_e1 = e1.transform.location.distance(cp)
         dist_e2 = e2.transform.location.distance(cp)
+        s3 = None
         if args.kind == "rear_end":
             # Both in A's lane; A's front meets B's rear about 3 m before the
             # conflict point, in view of the camera.
@@ -243,6 +291,15 @@ def main():
             s2 = back_off(e1, max(dB + 1.1 - dist_e1, 1.0))
             if v1 - a_brake * tb <= v2:
                 raise SystemExit("rear_end needs A faster than B at the impact.")
+        elif args.kind == "chain":
+            # C waits at the junction entry, B 1.5 m behind it, both standing;
+            # A's front reaches B's rear at --lead s. Centres measured back from
+            # the entry along A's lane (car lengths ~3.7-4.8 m).
+            c_back = 3.0
+            b_back = c_back + 1.9 + 1.5 + 1.9
+            s3 = back_off(e1, c_back)
+            s2 = back_off(e1, b_back)
+            s1 = back_off(e1, b_back + 1.9 + 2.45 + v1 * args.lead)
         else:
             # A aims its front at B's centre: A's centre is ~2.2 m short at impact.
             s1 = back_off(e1, max(dA + 2.2 - dist_e1, 1.0))
@@ -259,22 +316,70 @@ def main():
         car_a = cast(carla.Vehicle, world.spawn_actor(bp_a, tA))
         car_b = cast(carla.Vehicle, world.spawn_actor(bp_b, tB))
         actors += [car_a, car_b]
+        others: dict[str, dict] = {}  # name -> {"actor", "colour", "word", "role", ...}
+        if args.kind == "chain":
+            assert s3 is not None
+            bp_c = find_blueprint(bp, ["vehicle.citroen.c3", "vehicle.nissan.micra"])
+            set_colour(bp_c, "128,128,128")
+            tC = s3.transform
+            tC.location.z += 0.3
+            others["C"] = {"actor": world.spawn_actor(bp_c, tC), "colour": "grey", "word": "car",
+                           "role": "standing at the red light, in front of B"}
+        if args.kind == "crowded":
+            # C: oncoming, one lane over on A's road. It waits just outside the
+            # junction and sets off so that it passes A ~1 s before the crash.
+            vC = 30 / 3.6
+            wa = back_off(e1, 2.0)
+            opp = opposite_lane(wa)
+            if opp is None:
+                raise SystemExit("crowded: A's road has no oncoming lane here; try another --seed.")
+            x_a = lambda t: dA + 2.2 - dist_e1 - v1 * t  # A's centre, metres before its junction entry
+            t_pass = min(args.lead - 1.0, (dA + 0.2 - dist_e1 - vC) / v1)
+            c_start = max(0.4, t_pass - (x_a(t_pass) - 2.0) / vC)
+            bp_c = find_blueprint(bp, ["vehicle.citroen.c3", "vehicle.nissan.micra"])
+            set_colour(bp_c, "128,128,128")
+            tC = opp.transform
+            tC.location.z += 0.3
+            others["C"] = {"actor": world.spawn_actor(bp_c, tC), "colour": "grey", "word": "car",
+                           "role": "oncoming, passes A one lane over", "start_s": c_start, "speed": vC}
+            # D: waits at the red light on the far side of the junction (facing B).
+            ents = [a for a, _ in junction.get_waypoints(carla.LaneType.Driving)]
+            far = [w for w in ents if 150 < abs((w.transform.rotation.yaw - e2.transform.rotation.yaw) % 360) < 210
+                   and w.road_id != e1.road_id]
+            if far:
+                bp_d = find_blueprint(bp, ["vehicle.mini.cooper_s", "vehicle.mini.cooper_s_2021"])
+                set_colour(bp_d, "170,20,20")
+                tD = back_off(far[0], 4.0).transform
+                tD.location.z += 0.3
+                d_actor = world.try_spawn_actor(bp_d, tD)
+                if d_actor is not None:
+                    others["D"] = {"actor": d_actor, "colour": "red", "word": "car",
+                                   "role": "waiting at the red light across the junction"}
+            if "D" not in others:
+                print("crowded: no spot for the waiting car D at this junction; rendering with C only.")
+        actors += [o["actor"] for o in others.values()]
         if night:
             lights_on = carla.VehicleLightState(carla.VehicleLightState.LowBeam | carla.VehicleLightState.Position)
-            car_a.set_light_state(lights_on)
-            car_b.set_light_state(lights_on)
+            for v in [car_a, car_b] + [o["actor"] for o in others.values()]:
+                v.set_light_state(lights_on)
 
         # Fixed CCTV-style camera beyond the junction, facing A's oncoming traffic,
         # on the side of A's road away from where B comes from; it looks at the junction.
         fwd = e1.transform.get_forward_vector()
         right = e1.transform.get_right_vector()
-        side_ref = e2.transform.location if args.kind == "rear_end" else tB.location
+        side_ref = e2.transform.location if args.kind in ("rear_end", "chain") else tB.location
         b_side = (side_ref.x - cp.x) * right.x + (side_ref.y - cp.y) * right.y
         away = -1.0 if b_side > 0 else 1.0
         cam_loc = carla.Location(cp.x + args.cam_ahead * fwd.x + away * args.cam_side * right.x,
                                  cp.y + args.cam_ahead * fwd.y + away * args.cam_side * right.y,
                                  cp.z + args.cam_height)
-        dx, dy, dz = cp.x - cam_loc.x, cp.y - cam_loc.y, cp.z - cam_loc.z
+        look = cp
+        if args.look_at == "crash" and s3 is not None:
+            # Aim 8 m behind the front car of the queue, so the queue and A's
+            # last ~2 s of approach are in view (chain).
+            q = s3.transform.location
+            look = carla.Location(q.x - 8.0 * fwd.x, q.y - 8.0 * fwd.y, cp.z)
+        dx, dy, dz = look.x - cam_loc.x, look.y - cam_loc.y, look.z - cam_loc.z
         yaw = math.degrees(math.atan2(dy, dx))
         pitch = math.degrees(math.atan2(dz, math.hypot(dx, dy)))
         cam_bp = bp.find("sensor.camera.rgb")
@@ -291,6 +396,14 @@ def main():
         col = cast(carla.Sensor, world.spawn_actor(bp.find("sensor.other.collision"), carla.Transform(), attach_to=car_a))
         actors.append(col)
         col.listen(lambda e: collisions.append((e.frame, cast(carla.CollisionEvent, e).other_actor.id)))
+        # B's and the other cars' collisions: the chain's second impact, and any
+        # bystander that got hit (which would make the render invalid).
+        side_hits: dict[str, list] = {}
+        for name, v in [("B", car_b)] + [(n, o["actor"]) for n, o in others.items()]:
+            side_hits[name] = []
+            sc = cast(carla.Sensor, world.spawn_actor(bp.find("sensor.other.collision"), carla.Transform(), attach_to=v))
+            actors.append(sc)
+            sc.listen(lambda e, lst=side_hits[name]: lst.append((e.frame, cast(carla.CollisionEvent, e).other_actor.id)))
 
         # Light controlling A's approach: the one whose stop waypoints share A's road.
         light_a = min(lights, key=lambda L: min(
@@ -308,7 +421,15 @@ def main():
             world.tick()
             images.get()
         car_a.enable_constant_velocity(carla.Vector3D(v1, 0, 0))  # local frame: forward
-        car_b.enable_constant_velocity(carla.Vector3D(v2, 0, 0))
+        if args.kind == "chain":
+            # Standing at the light with the brakes on, NOT held by constant
+            # velocity (a held car is immovable, so A would bounce off it).
+            for v in (car_b, others["C"]["actor"]):
+                v.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0, hand_brake=True))
+        else:
+            car_b.enable_constant_velocity(carla.Vector3D(v2, 0, 0))
+            for o in others.values():
+                o["actor"].enable_constant_velocity(carla.Vector3D(0, 0, 0))  # waiting
 
         frames, t0, released = [], None, False
         n_frames = int((args.lead + 3.0) * FPS)
@@ -327,16 +448,19 @@ def main():
             if not collisions and not released and a_brake and ts >= args.lead - tb:
                 # A brakes: lower its held speed a little every tick.
                 car_a.enable_constant_velocity(carla.Vector3D(max(v1 - a_brake * (ts - (args.lead - tb)), 0.0), 0, 0))
+            c = others.get("C")
+            if c and "start_s" in c and not c.get("moving") and ts >= c["start_s"]:
+                c["actor"].enable_constant_velocity(carla.Vector3D(c["speed"], 0, 0))
+                c["moving"] = True
             if collisions and not released:
                 car_a.disable_constant_velocity()
-                car_b.disable_constant_velocity()
+                if args.kind != "chain":
+                    car_b.disable_constant_velocity()
                 released = True
             img.save_to_disk(str(out / "frames" / f"{k:06d}.png"))
             row = {"i": k, "t": round(ts, 5), "sim_frame": snap.frame, "light_A": str(light_a.get_state())}
-            for name, v in (("A", car_a), ("B", car_b)):
-                tf, vel = v.get_transform(), v.get_velocity()
-                row[name] = {"x": tf.location.x, "y": tf.location.y, "z": tf.location.z, "yaw": tf.rotation.yaw,
-                             "speed_kmh": 3.6 * math.hypot(vel.x, vel.y)}
+            for name, v in [("A", car_a), ("B", car_b)] + [(n, o["actor"]) for n, o in others.items()]:
+                row[name] = _row(v)
             frames.append(row)
 
         # The collision callback runs on another thread and can be seen a tick
@@ -350,6 +474,29 @@ def main():
             valid = not hit_b
         else:
             valid = hit_b
+
+        def first_hit(lst, other_id=None):
+            for fr, oid in lst:
+                if other_id is None or oid == other_id:
+                    return next((r["i"] for r in frames if r["sim_frame"] >= fr), None)
+            return None
+
+        second_impact = None
+        if args.kind == "chain" and impact_frame is not None:
+            k2 = first_hit(side_hits["B"], others["C"]["actor"].id)
+            if k2 is not None:
+                second_impact = {"vehicles": ["B", "C"], "t": frames[k2]["t"], "i": k2}
+        bystander_hits = {}
+        if args.kind == "crowded":
+            ids = {car_a.id: "A", car_b.id: "B", **{o["actor"].id: n for n, o in others.items()}}
+            for n in others:
+                k_ = first_hit(side_hits[n])
+                if k_ is not None:
+                    bystander_hits[n] = {"t": frames[k_]["t"], "with": ids.get(side_hits[n][0][1], "other")}
+            # C must not touch anyone before the A-B crash (a wreck sliding into
+            # D afterwards is allowed and recorded).
+            if impact_frame is not None and "C" in bystander_hits and bystander_hits["C"]["t"] <= frames[impact_frame]["t"]:
+                valid = False
         # Where A's signal head is, so the pipeline can pick that light's track.
         try:
             boxes = light_a.get_light_boxes()
@@ -377,14 +524,21 @@ def main():
             "vehicles": {"A": {"length": 2 * bbA.x, "width": 2 * bbA.y, "colour": "white", "type": "car",
                                "model": "Tesla Model 3"},
                          "B": {"length": 2 * bbB.x, "width": 2 * bbB.y, "colour": "blue" if b_coloured else None,
-                               "type": args.b_vehicle, "word": b_word, "model": bp_b.id}},
+                               "type": args.b_vehicle, "word": b_word, "model": bp_b.id},
+                         **{n: {"length": 2 * o["actor"].bounding_box.extent.x,
+                                "width": 2 * o["actor"].bounding_box.extent.y, "colour": o["colour"],
+                                "type": "car", "word": o["word"], "model": o["actor"].type_id, "role": o["role"]}
+                            for n, o in others.items()}},
+            "second_impact": second_impact,
+            "bystander_collisions": bystander_hits or None,
             "v1_kmh": args.v1, "v2_kmh": args.v2,
             "a_braking": {"decel_ms2": a_brake, "starts_before_impact_s": tb} if a_brake else None,
             "signal_changes": light_changes,
             "stop_line_A": [[w.transform.location.x, w.transform.location.y] for w in light_a.get_stop_waypoints()],
             "light_A_xyz": light_xyz,
             "frames": [{"i": r["i"], "t": r["t"], "A_speed_kmh": r["A"]["speed_kmh"],
-                        "B_speed_kmh": r["B"]["speed_kmh"], "A": r["A"], "B": r["B"]} for r in frames],
+                        "B_speed_kmh": r["B"]["speed_kmh"], "A": r["A"], "B": r["B"],
+                        **{n: r[n] for n in others}} for r in frames],
             "note": "CARLA uses a left-handed frame (x forward, y right, z up); distances are unaffected.",
         }
         (out / "gt.json").write_text(json.dumps(gt, indent=1))
@@ -398,8 +552,15 @@ def main():
             print(f"Wrote {out}, but the cars did NOT collide: try another --seed")
         elif not hit_b:
             print(f"Wrote {out}, but A hit something other than B: try another --seed or less --traffic")
+        elif not valid:
+            print(f"Wrote {out}, but bystander C hit something before the crash: {bystander_hits}; try another --seed")
         else:
             print(f"Wrote {out}; impact at frame {impact_frame} (t = {frames[impact_frame]['t']:.2f} s)")
+            if args.kind == "chain":
+                print("  second impact (B into C): " + (f"frame {second_impact['i']} (t = {second_impact['t']:.2f} s)"
+                                                         if second_impact else "NONE (B stopped short of C)"))
+            if args.kind == "crowded":
+                print(f"  bystanders: {', '.join(others)}; collisions after the crash: {bystander_hits or 'none'}")
         print(f"Check the view: open {out / 'frames' / '000000.png'}. If a building or tree blocks it, "
               "rerun with e.g. --cam-ahead 22, --cam-height 14 or --cam-side 4, or another --seed.")
         if not valid:

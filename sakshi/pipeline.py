@@ -187,7 +187,10 @@ def check_party(party: dict[str, str], statement_ids: list[str], involved: list[
     """Sanity-check Wonder's statement -> vehicle suggestions against the
     geometry: two statements cannot come from one vehicle, and when we know
     which vehicles collided (or nearly did), a statement-giver outside that pair
-    is reassigned to the pair member nobody has claimed. Returns (party, notes)."""
+    is reassigned to the pair member nobody has claimed. With MORE statements
+    than vehicles in the collision (a pile-up, a witness), a statement-giver
+    outside it is allowed: their claims are about another moment or vehicle and
+    are checked as such. Returns (party, notes)."""
     if not involved:
         return party, []
     party, notes = dict(party), []
@@ -196,7 +199,10 @@ def check_party(party: dict[str, str], statement_ids: list[str], involved: list[
         tid = party.get(sid)
         if tid is None:
             continue
-        if tid in used.values() or tid not in involved:
+        if tid not in used.values() and tid not in involved and len(statement_ids) > len(involved):
+            notes.append(f"{sid}: {tid} is not in the collision Sakshi measured; kept (more statements "
+                         "than vehicles in that collision)")
+        elif tid in used.values() or tid not in involved:
             why = "already matched to another statement" if tid in used.values() else "not in the collision"
             free = [t for t in involved if t not in used.values() and t not in
                     [party.get(o) for o in statement_ids if o != sid]]
@@ -445,12 +451,12 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     # Only road users are measured (not traffic lights, not vehicle parts).
     movers = [t for t in tracks if t["concept"] in events.MOVERS]
-    refine = clk.method == "clock_ticks" and clk_ticks and inp.get("clock_mode") != "ticks_only"
-    if refine:
+    refine_ticks = clk_ticks if clk.method == "clock_ticks" and inp.get("clock_mode") != "ticks_only" else None
+    if refine_ticks:
         # Drop-aware refinement: the vehicles' own motion shows where frames were lost.
         steps, step_sig = step_displacements(tracks, calib, info.n)
         clk_ticked = clk
-        clk = clock_mod.refine_with_motion(info.n, clk_ticks, info.fps, steps, clk.duplicate, step_sigma=step_sig)
+        clk = clock_mod.refine_with_motion(info.n, refine_ticks, info.fps, steps, clk.duplicate, step_sigma=step_sig)
         progress("clock", {"method": clk.method,
                            "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})
 
@@ -458,12 +464,12 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     progress("physics", {"measured_tracks": list(results)})
 
     impacts = events.detect_impacts(results, tracks)
-    if impacts and refine:
+    if impacts and refine_ticks:
         # After contact, motion is violent and no longer smooth, so it would read
         # as fake dropped frames: refit the clock from pre-impact motion only.
         i_imp = impacts[0]["i"]
         steps_pre = {k: np.where(np.arange(info.n) < i_imp, v, np.nan) for k, v in steps.items()}
-        clk = clock_mod.refine_with_motion(info.n, clk_ticks, info.fps, steps_pre, clk_ticked.duplicate,
+        clk = clock_mod.refine_with_motion(info.n, refine_ticks, info.fps, steps_pre, clk_ticked.duplicate,
                                            step_sigma=step_sig)
         progress("clock", {"method": clk.method, "refit": "pre-impact motion only",
                            "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})

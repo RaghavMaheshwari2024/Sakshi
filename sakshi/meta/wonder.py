@@ -133,6 +133,9 @@ def describe_scene(labelled_keyframes: list[np.ndarray], statements: list[dict],
         what = "come closest to each other (a near miss, no contact)" if near_miss else "collide"
         hint = (f"The measurements show that {' and '.join(involved)} {what}; the people giving "
                 "statements are most likely in those, one statement per road user. ")
+        if len(statements) > len(involved):
+            hint += ("There are more statements than road users in that collision, so some speakers "
+                     "were in OTHER labelled vehicles: match them by their own description too. ")
     if closeups:
         hint += f"The last {len(closeups)} images are enlarged close-ups of those road users, labelled with their ids. "
     text = (
