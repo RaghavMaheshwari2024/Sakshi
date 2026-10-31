@@ -453,6 +453,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     movers = [t for t in tracks if t["concept"] in events.MOVERS]
     refine = clk.method == "clock_ticks" and clk_ticks and inp.get("clock_mode") != "ticks_only"
     if refine:
+        assert clk_ticks is not None  # refine is only truthy when there are ticks
         # Drop-aware refinement: the vehicles' own motion shows where frames were lost.
         steps, step_sig = step_displacements(tracks, calib, info.n)
         clk_ticked = clk
@@ -465,6 +466,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     impacts = events.detect_impacts(results, tracks)
     if impacts and refine:
+        assert clk_ticks is not None  # as above
         # After contact, motion is violent and no longer smooth, so it would read
         # as fake dropped frames: refit the clock from pre-impact motion only.
         i_imp = impacts[0]["i"]
