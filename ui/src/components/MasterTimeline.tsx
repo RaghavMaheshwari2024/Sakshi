@@ -67,7 +67,7 @@ export const MasterTimeline: React.FC = () => {
   const signalChanges = caseData?.facts?.signal_changes || [];
 
   return (
-    <div className="h-16 border-t border-workspace-border bg-workspace-surface/95 backdrop-blur px-4 flex flex-col justify-center select-none z-30">
+    <div className="h-16 border border-zinc-800 bg-zinc-950/90 rounded-lg backdrop-blur px-4 flex flex-col justify-center select-none shadow-md">
       {/* Top track: Signal Status + Dropped Frame Indicators */}
       <div
         ref={progressBarRef}
