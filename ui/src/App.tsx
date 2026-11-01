@@ -122,6 +122,7 @@ export const App: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isBridgeOpen) return; // it handles its own keys
       if (e.key === 'Escape') {
         if (isGuideOpen) setIsGuideOpen(false);
         else if (isProcessingOpen) setIsProcessingOpen(false);
@@ -136,7 +137,7 @@ export const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeView, isProcessingOpen, isNewCaseOpen, isGuideOpen, setActiveView]);
+  }, [activeView, isProcessingOpen, isNewCaseOpen, isGuideOpen, isBridgeOpen, setActiveView]);
 
   useGSAP(
     () => {

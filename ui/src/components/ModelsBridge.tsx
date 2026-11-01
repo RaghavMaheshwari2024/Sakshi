@@ -1,7 +1,7 @@
 /**
- * A brief passage from the front page into the workspace: how Meta's models feed
- * the physics. The workspace is already loaded underneath, so this never makes
- * anyone wait: any click or key ends it at once.
+ * The step from the front page into the workspace: how Meta's models feed the
+ * physics. It stays until the user moves on, so it can be read at any pace. The
+ * workspace is already loaded underneath, so leaving is immediate.
  */
 import React, { useEffect, useRef } from 'react';
 import { gsap, useGSAP } from '../lib/motion';
@@ -14,46 +14,43 @@ const STAGES = [
 
 export const ModelsBridge: React.FC<{ onDone: () => void }> = ({ onDone }) => {
   const root = useRef<HTMLDivElement>(null);
-  const finished = useRef(false);
-  const timeline = useRef<gsap.core.Timeline | null>(null);
+  const leaving = useRef(false);
 
-  const finish = () => {
-    if (finished.current) return;
-    finished.current = true;
-    onDone();
-  };
-
-  useGSAP(
+  const { contextSafe } = useGSAP(
     () => {
-      timeline.current = gsap.timeline({ onComplete: finish })
+      gsap.timeline()
         .from('.bridge-title', { autoAlpha: 0, y: 12, duration: 0.4 })
         .from('.bridge-stage', { autoAlpha: 0, y: 18, duration: 0.42, stagger: 0.1 }, '-=0.22')
         .from('.bridge-link path', { drawSVG: '0%', duration: 0.42, stagger: 0.05, ease: 'power2.inOut' }, '-=0.2')
         .from('.bridge-engine', { autoAlpha: 0, scale: 0.96, duration: 0.3, ease: 'back.out(1.6)' }, '-=0.14')
-        .to({}, { duration: 0.75 })
-        .to('.bridge-content', { autoAlpha: 0, y: -14, scale: 0.985, duration: 0.3, ease: 'power2.in' })
-        .to(root.current, { autoAlpha: 0, duration: 0.38, ease: 'power1.inOut' }, '-=0.14');
+        .from('.bridge-hint', { autoAlpha: 0, duration: 0.4, ease: 'none' }, '+=0.15')
+        .to('.bridge-hint', { opacity: 0.45, duration: 1.1, ease: 'sine.inOut', repeat: -1, yoyo: true });
     },
     { scope: root },
   );
 
-  // Asked to leave: finish quickly from wherever it is, rather than cutting.
-  const leave = () => {
-    const tl = timeline.current;
-    if (finished.current || !tl) return;
-    tl.pause();
-    gsap.to(root.current, { autoAlpha: 0, duration: 0.18, ease: 'none', onComplete: finish });
-  };
+  const leave = contextSafe(() => {
+    if (leaving.current) return;
+    leaving.current = true;
+    gsap.timeline({ onComplete: onDone })
+      .to('.bridge-content', { autoAlpha: 0, y: -14, scale: 0.985, duration: 0.26, ease: 'power2.in', overwrite: true })
+      .to(root.current, { autoAlpha: 0, duration: 0.32, ease: 'power1.inOut' }, '-=0.12');
+  });
 
+  // The keyboard route to the same click.
   useEffect(() => {
-    window.addEventListener('keydown', leave);
-    return () => window.removeEventListener('keydown', leave);
-    // `leave` only reads refs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') {
+        e.preventDefault();
+        leave();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [leave]);
 
   return (
-    <div ref={root} role="status" onPointerDown={leave}
+    <div ref={root} role="dialog" aria-label="How Meta's models feed the physics" onClick={leave}
          className="fixed inset-0 z-50 flex cursor-pointer items-center justify-center overflow-y-auto bg-asphalt-950 px-4 py-8 sm:px-6">
       <div className="bridge-content w-full max-w-[1040px]">
         <h2 className="bridge-title mx-auto max-w-2xl text-center font-serif text-[clamp(25px,3.4vw,40px)] font-light leading-tight text-bone">
@@ -80,6 +77,8 @@ export const ModelsBridge: React.FC<{ onDone: () => void }> = ({ onDone }) => {
           <div className="text-[15px] text-bone">Physics engine</div>
           <div className="mt-0.5 text-[12.5px] text-bone-300">Speed in km/h, with a 90% range</div>
         </div>
+
+        <p className="bridge-hint mt-8 text-center text-[13.5px] text-bone-300">Click anywhere to open the investigation</p>
       </div>
     </div>
   );
