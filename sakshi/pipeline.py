@@ -65,6 +65,9 @@ def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, pro
         g = cv2.cvtColor(cv2.resize(f, (640, int(640 * f.shape[0] / f.shape[1]))), cv2.COLOR_BGR2GRAY)
         dup_list.append(prev_g is not None and clock_mod.is_duplicate(prev_g, g))
         prev_g = g
+        if clock_box and crop(f, clock_box, 0).size == 0:  # no pixels there, so no clock to read
+            progress("clock", {"clock_box_ignored": clock_box, "frame_size": [f.shape[1], f.shape[0]]})
+            clock_box = None
         if clock_box:
             o = cv2.cvtColor(crop(f, clock_box, 0), cv2.COLOR_BGR2GRAY)
             if prev_o is not None and clock_mod.overlay_changed(prev_o, o) and \
@@ -521,7 +524,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     # Statements: transcribe recorded ones with Muse Voice Transcribe.
     statements = []
     for s in inp.get("statements", []):
-        if s.get("audio"):
+        if s.get("audio") and tracks_override is None:
             from .meta import voice
 
             tr = voice.transcribe(case_dir / s["audio"], languages=inp.get("languages"))
@@ -532,13 +535,13 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     scene = None
     party = inp.get("party_to_track")
+    moment = impact or closest
     if statements and tracks_override is None:
         from .meta import wonder
 
         # Only road users are labelled: 10+ traffic-light boxes crowd the frames
         # and confused the scene description (signals are handled separately).
         shown = [t for t in tracks if t["concept"] in events.MOVERS]
-        moment = impact or closest
         involved = list(moment["tracks"]) if moment else []
         keyframes, closeups = labelled_keyframes(video, shown, info.n, moment["i"] if moment else None,
                                                  focus=involved)
@@ -548,12 +551,12 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     checked = []
     ctx = {"impact_t": impact["t"] if impact else None, "closest_t": closest["t"] if closest else None,
-           "moment_tracks": list((impact or closest)["tracks"]) if impact or closest else [],
+           "moment_tracks": list(moment["tracks"]) if moment else [],
            "signal_changes": main_light,
             "stop_line": cal_in.get("stop_line_m"), "braking": braking, "signal_note": signal_note}
     if inp.get("claims_override"):  # testing: claims written by hand, no model call
         checked = [claims_mod.evaluate(c, results, ctx) for c in inp["claims_override"]]
-    elif statements and party:
+    elif statements and party and tracks_override is None:
         from .meta import wonder
 
         raw_claims = read_claims(wonder, statements, party, progress)

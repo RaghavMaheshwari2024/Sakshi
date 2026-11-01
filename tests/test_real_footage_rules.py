@@ -149,3 +149,50 @@ def test_the_run_announces_statements_so_they_can_be_assigned_without_a_suggesti
     run(tmp_path, progress=lambda stage, data: seen.update({stage: data}), tracks_override=case["tracks"], mc=MCConfig(n=2))
     assert seen["statements"]["items"] == [{"id": "s1", "speaker": "Driver"}]
     assert "car-0" in seen["tracking"]["views"]
+
+
+def scenario(tmp_path, **inp):
+    """A real clip and its recorded tracks, copied so a run cannot touch the fixture."""
+    import json
+    import shutil
+    from pathlib import Path
+
+    src = Path(__file__).parent.parent / "ui/public/scenarios/base"
+    case = json.loads((src / "case.json").read_text())
+    shutil.copy(src / "input.mp4", tmp_path)
+    cal = case["calibration"]
+    (tmp_path / "case_input.json").write_text(json.dumps({
+        "calibration": {"image_pts": cal["image_pts"], "ground_pts_m": cal["ground_pts_m"]}, **inp}))
+    return case["tracks"]
+
+
+def test_a_clock_box_outside_the_frame_is_reported_not_fatal(tmp_path):
+    from sakshi.pipeline import build_clock
+    from sakshi.video import probe
+
+    scenario(tmp_path)
+    video = tmp_path / "input.mp4"
+    info = probe(video)
+    seen = []
+    off_frame = [info.width + 50, 10, info.width + 400, 52]
+    clk, ticks = build_clock(video, info.n, info.fps, info.pts_s, off_frame, lambda s, d: seen.append(d))
+    assert ticks is None and len(clk.t) == info.n
+    assert any(d.get("clock_box_ignored") == off_frame for d in seen)
+
+
+def test_a_run_given_recorded_tracks_calls_no_model(tmp_path, monkeypatch):
+    """`--offline` promises no API calls, even when the case has statements and drivers."""
+    from sakshi.engine.uncertainty import MCConfig
+    from sakshi.meta import voice, wonder
+    from sakshi.pipeline import run
+
+    def called(*a, **k):
+        raise AssertionError("a model was called on an offline run")
+
+    monkeypatch.setattr(wonder, "extract_claims", called)
+    monkeypatch.setattr(voice, "transcribe", called)
+    tracks = scenario(tmp_path, party_to_track={"s1": "car-0"}, statements=[
+        {"id": "s1", "speaker": "Driver", "text": "I was slow."},
+        {"id": "s2", "speaker": "Witness", "audio": "audio/s2.m4a"}])
+    case = run(tmp_path, progress=lambda *_: None, tracks_override=tracks, mc=MCConfig(n=2))
+    assert case["claims"] == []
