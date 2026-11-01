@@ -169,6 +169,33 @@ export interface ProcessingModalProps {
 
 type Source = 'idle' | 'live' | 'recorded';
 
+interface ModelCall { model: string; job: string; cached: boolean; seconds: number; output: string }
+
+const MAX_CALLS_SHOWN = 200;
+
+/** What each model actually returned in this run, as it arrives. */
+const ModelCallLog: React.FC<{ calls: ModelCall[] }> = ({ calls }) => (
+  <section aria-label="Model outputs" className="border-t border-line px-5 py-3">
+    <h3 className="text-[13px] font-medium text-bone">Model outputs in this run</h3>
+    {calls.length === 0 ? (
+      <p className="mt-1 text-[12.5px] text-bone-500">Each model’s real answer appears here as it finishes.</p>
+    ) : (
+      <ol aria-live="polite" className="mt-2 max-h-56 divide-y divide-line overflow-y-auto">
+        {[...calls].reverse().map((c, i) => (
+          <li key={calls.length - i} className="py-1.5">
+            <div className="flex flex-wrap items-baseline gap-x-2 text-[12px] text-bone-400">
+              <span className="measured text-bone-200">{c.model}</span>
+              <span>{c.job}</span>
+              <span className={c.cached ? 'text-bone-500' : 'text-signal-green'}>{c.cached ? 'from cache' : `live · ${c.seconds.toFixed(1)} s`}</span>
+            </div>
+            <p className="measured mt-0.5 break-words text-[12px] leading-snug text-bone-300">{c.output}</p>
+          </li>
+        ))}
+      </ol>
+    )}
+  </section>
+);
+
 interface TrackView { i: number; box: [number, number, number, number]; w: number; h: number }
 
 /** Signals are read separately; only road users can have a driver. */
@@ -202,6 +229,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
   const [partyMapping, setPartyMapping] = useState<Record<string, string>>({});
   const [suggested, setSuggested] = useState<Suggestion[]>([]);
   const [trackViews, setTrackViews] = useState<Record<string, TrackView>>({});
+  const [modelCalls, setModelCalls] = useState<ModelCall[]>([]);
   const [tracks, setTracks] = useState<string[]>([]);
   const [statements, setStatements] = useState<Array<{ id: string; speaker: string }>>([]);
   const [result, setResult] = useState<CaseData | null>(null);
@@ -213,6 +241,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
   const bar = useRef<HTMLDivElement>(null);
 
   const reset = useCallback(() => {
+    setModelCalls([]);
     setStatuses(Object.fromEntries(STAGES.map((s) => [s.id, 'pending'])));
     setData({});
     setIsDone(false);
@@ -312,6 +341,16 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
       });
     });
 
+    es.addEventListener('model_call', (e: MessageEvent) => {
+      try {
+        const call = JSON.parse(e.data) as ModelCall;
+        setModelCalls((p) => [...p, call].slice(-MAX_CALLS_SHOWN));
+        received = true;
+      } catch (err) {
+        console.warn('Unreadable model call:', err);
+      }
+    });
+
     es.addEventListener('done', async () => {
       stop();
       // A reassignment made during the run applies now: save it and run again.
@@ -397,7 +436,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
   };
 
   const stateTag = source === 'live'
-    ? <span className="rounded-[3px] bg-signal-greensoft px-1.5 py-0.5 text-[12px] text-signal-green">Live from the backend</span>
+    ? <span className="rounded-[3px] bg-signal-greensoft px-1.5 py-0.5 text-[12px] text-signal-green">Running on the backend</span>
     : source === 'recorded'
       ? <span className="rounded-[3px] bg-asphalt-700 px-1.5 py-0.5 text-[12px] text-bone-300">Recorded run</span>
       : null;
@@ -525,6 +564,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
           );
         })}
       </ol>
+      {source === 'live' && <ModelCallLog calls={modelCalls} />}
     </Dialog>
   );
 };

@@ -23,6 +23,29 @@ export async function fetchBackendCases(): Promise<BackendCase[] | null> {
   }
 }
 
+export interface BackendStatus {
+  live: boolean;
+  code_required: boolean;
+  max_upload_mb: number;
+  max_clip_seconds: number;
+}
+
+/** What the server can do, or null when no backend is running. */
+export async function fetchBackendStatus(): Promise<BackendStatus | null> {
+  try {
+    const res = await fetch('/cases/status', { headers: { Accept: 'application/json' } });
+    if (!res.ok || !res.headers.get('content-type')?.includes('json')) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function unlockBackend(code: string): Promise<boolean> {
+  const res = await fetch('/cases/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+  return res.ok;
+}
+
 export const backendVideoUrl = (id: string) => `/cases/${id}/video`;
 
 /** Open a finished backend case in the workspace. */

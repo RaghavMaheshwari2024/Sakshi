@@ -1,0 +1,9 @@
+.git
+.env
+.venv
+cache
+cases
+logs
+ui/node_modules
+ui/dist
+**/__pycache__

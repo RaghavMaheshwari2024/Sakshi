@@ -140,6 +140,8 @@ export interface CaseData {
   camera_mode?: "fixed" | "dashcam";
   /** Which model did what on this case, written by the pipeline. */
   models?: ModelCredit[];
+  /** How this result was produced. Absent on pre-rendered and older cases. */
+  run?: { mode: 'pipeline' | 'replayed_tracks'; live_calls: number; cached_calls: number; live_seconds: number };
   contact?: { mode: string; per_vehicle?: Record<string, unknown>; occluded_frames?: Record<string, number> };
   clip: ClipInfo;
   clock: ClockInfo;

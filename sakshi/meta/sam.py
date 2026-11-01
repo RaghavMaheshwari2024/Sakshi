@@ -29,7 +29,7 @@ from meta_sam_parser import (
 )
 
 from .. import cache, config
-from ..usage_log import logged
+from ..usage_log import logged, show
 from .client import async_client
 
 
@@ -97,6 +97,11 @@ async def upload_video(path: Path) -> str:
     return up.id
 
 
+def _describe(concept: str, result: VideoSegmentationResult) -> str:
+    masks = [r for r in result.records if r.kind == "mask"]
+    return f"'{concept}': {len({r.object_id for r in masks})} objects tracked over {len(masks)} masks"
+
+
 # --- One concept ----------------------------------------------------------
 async def segment_concept(video: Path, concept: str) -> VideoSegmentationResult:
     """Track every instance of `concept` through the video (one request)."""
@@ -105,8 +110,10 @@ async def segment_concept(video: Path, concept: str) -> VideoSegmentationResult:
     key = cache.key_for(sha, config.SAM_MODEL, concept, metadata)
     rows = cache.get_jsonl("sam_stream", key)
     if rows is not None:
-        with logged(config.SAM_MODEL, f"track '{concept}'", cached=True):
-            return await _parse(_replay(rows))
+        with logged(config.SAM_MODEL, f"track '{concept}'", cached=True) as call:
+            result = await _parse(_replay(rows))
+        show(call, _describe(concept, result))
+        return result
 
     file_id = await upload_video(video)
     recorded: list[dict] = []
@@ -127,7 +134,7 @@ async def segment_concept(video: Path, concept: str) -> VideoSegmentationResult:
             ],
         }
     ]
-    with logged(config.SAM_MODEL, f"track '{concept}'", cached=False):
+    with logged(config.SAM_MODEL, f"track '{concept}'", cached=False) as call:
         async with async_client() as api:
             stream = await api.responses.create(
                 model=config.SAM_MODEL,
@@ -138,6 +145,7 @@ async def segment_concept(video: Path, concept: str) -> VideoSegmentationResult:
             async with stream, aclosing(_stream_events(stream)) as ev, aclosing(tee(ev)) as t:
                 result = await _parse(t)
     cache.put_jsonl("sam_stream", key, recorded)
+    show(call, _describe(concept, result))
     return result
 
 

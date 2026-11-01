@@ -17,16 +17,21 @@ Endpoints the UI uses:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
+import os
+import shutil
 import sys
 import threading
 import uuid
 from pathlib import Path
 
 import cv2
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -39,8 +44,47 @@ from sakshi.engine import calib_sources  # noqa: E402
 from sakshi.pipeline import run  # noqa: E402
 from sakshi.video import find_input_video, probe, read_frames  # noqa: E402
 
+MAX_UPLOAD_MB = int(os.environ.get("SAKSHI_MAX_UPLOAD_MB", "200"))
+MAX_CLIP_SECONDS = int(os.environ.get("SAKSHI_MAX_CLIP_SECONDS", "120"))
+MAX_RUNS = int(os.environ.get("SAKSHI_MAX_RUNS", "2"))
+ACCESS_CODE = os.environ.get("SAKSHI_ACCESS_CODE", "")
+ACCESS_COOKIE = "sakshi_access"
+UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
+
 app = FastAPI(title="Sakshi")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+def _access_token() -> str:
+    return hashlib.sha256(f"sakshi:{ACCESS_CODE}".encode()).hexdigest()
+
+
+@app.middleware("http")
+async def require_access(request: Request, call_next):
+    """On a public server every run spends the owner's API key and every case may
+    show someone's footage. With SAKSHI_ACCESS_CODE set, /cases needs the code."""
+    path = request.url.path
+    open_paths = ("/cases/status", "/cases/unlock", "/cases/calibration-presets")
+    if ACCESS_CODE and path.startswith("/cases") and path not in open_paths and request.method != "OPTIONS":
+        if not hmac.compare_digest(request.cookies.get(ACCESS_COOKIE, ""), _access_token()):
+            return JSONResponse({"detail": "This server needs an access code."}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/cases/status")
+def status():
+    """What this server can do, so the UI can say so before anyone uploads."""
+    return {"live": bool(os.environ.get("MODEL_API_KEY")), "code_required": bool(ACCESS_CODE),
+            "max_upload_mb": MAX_UPLOAD_MB, "max_clip_seconds": MAX_CLIP_SECONDS}
+
+
+@app.post("/cases/unlock")
+def unlock(body: dict):
+    if not ACCESS_CODE or not hmac.compare_digest(str(body.get("code", "")), ACCESS_CODE):
+        raise HTTPException(401, "That access code is not right.")
+    response = JSONResponse({"ok": True})
+    response.set_cookie(ACCESS_COOKIE, _access_token(), httponly=True, samesite="lax", max_age=12 * 3600)
+    return response
 
 
 def _case(case_id: str) -> Path:
@@ -82,22 +126,44 @@ def list_cases():
     return sorted(out, key=lambda c: -c["updated"])
 
 
+async def _save_upload(upload: UploadFile, dest: Path) -> None:
+    """Stream to disk, stopping at the size limit instead of filling memory."""
+    written = 0
+    with dest.open("wb") as out:
+        while chunk := await upload.read(1024 * 1024):
+            written += len(chunk)
+            if written > MAX_UPLOAD_MB * 1024 * 1024:
+                raise HTTPException(413, f"The clip is over the {MAX_UPLOAD_MB} MB limit on this server.")
+            out.write(chunk)
+
+
 @app.post("/cases")
 async def create_case(video: UploadFile = File(...), statements_json: str = Form("[]"),
                       languages: str = Form('["Hindi", "English"]'), camera_mode: str = Form("fixed"),
                       audio: list[UploadFile] | None = File(None)):
+    if camera_mode not in ("fixed", "dashcam"):
+        raise HTTPException(400, "camera_mode must be 'fixed' or 'dashcam'")
     case_id = uuid.uuid4().hex[:10]
     d = CASES_DIR / case_id
     (d / "audio").mkdir(parents=True)
     suffix = Path(video.filename or "clip.mp4").suffix or ".mp4"
-    (d / f"input{suffix}").write_bytes(await video.read())
-    statements = json.loads(statements_json)
-    for f in audio or []:
-        if not f.filename:
-            raise HTTPException(400, "audio file is missing a filename")
-        (d / "audio" / Path(f.filename).name).write_bytes(await f.read())
-    if camera_mode not in ("fixed", "dashcam"):
-        raise HTTPException(400, "camera_mode must be 'fixed' or 'dashcam'")
+    try:
+        clip = d / f"input{suffix}"
+        await _save_upload(video, clip)
+        try:
+            info = probe(clip)
+        except Exception as exc:  # noqa: BLE001 - whatever the decoder raises, it is not a clip we can use
+            raise HTTPException(400, "This file could not be read as a video.") from exc
+        if info.n / max(info.fps, 1e-6) > MAX_CLIP_SECONDS:
+            raise HTTPException(413, f"The clip is over the {MAX_CLIP_SECONDS} s limit on this server.")
+        statements = json.loads(statements_json)
+        for f in audio or []:
+            if not f.filename:
+                raise HTTPException(400, "audio file is missing a filename")
+            await _save_upload(f, d / "audio" / Path(f.filename).name)
+    except HTTPException:
+        shutil.rmtree(d, ignore_errors=True)  # a refused upload leaves nothing behind
+        raise
     inp = {"statements": statements, "calibration": None, "party_to_track": None,
            "languages": json.loads(languages), "camera_mode": camera_mode}
     (d / "case_input.json").write_text(json.dumps(inp, indent=1))
@@ -169,6 +235,8 @@ async def run_case(case_id: str, force: bool = False):
     with _RUNNING_LOCK:
         if case_id in _RUNNING:
             raise HTTPException(409, "this case is already running")
+        if len(_RUNNING) >= MAX_RUNS:
+            raise HTTPException(429, "the server is busy with other runs; try again shortly")
         _RUNNING.add(case_id)
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
@@ -208,3 +276,8 @@ def case_json(case_id: str):
 @app.get("/cases/{case_id}/video")
 def case_video(case_id: str):
     return FileResponse(_video(_case(case_id)))  # supports Range requests, so seeking works
+
+
+# One server for everything when the UI has been built; API routes above take priority.
+if UI_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=UI_DIST, html=True), name="ui")
