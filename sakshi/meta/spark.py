@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from .. import cache, config
-from ..usage_log import logged
+from ..usage_log import logged, show
 from .client import sync_client
 
 
@@ -41,9 +41,11 @@ def _ask(job: str, img_bgr: np.ndarray, prompt: str, schema: dict) -> dict:
     key = cache.key_for(config.SPARK_MODEL, job, prompt, schema, raw)
     hit = cache.get_json("spark", key)
     if hit is not None:
-        with logged(config.SPARK_MODEL, job, cached=True):
-            return hit
-    with logged(config.SPARK_MODEL, job):
+        with logged(config.SPARK_MODEL, job, cached=True) as call:
+            pass
+        show(call, hit)
+        return hit
+    with logged(config.SPARK_MODEL, job) as call:
         resp = sync_client().chat.completions.create(
             model=config.SPARK_MODEL,
             messages=[
@@ -65,6 +67,7 @@ def _ask(job: str, img_bgr: np.ndarray, prompt: str, schema: dict) -> dict:
         raise RuntimeError(f"{config.SPARK_MODEL} returned no content for '{job}'")
     out = json.loads(content)
     cache.put_json("spark", key, out)
+    show(call, out)
     return out
 
 

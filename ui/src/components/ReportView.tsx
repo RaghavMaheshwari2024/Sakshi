@@ -4,6 +4,7 @@
  * Where the pipeline did not produce a value, the report says so.
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import { caseSource } from './CaseSourceBadge';
 import { ArrowLeft, Printer } from 'lucide-react';
 import { useCaseStore } from '../store/useCaseStore';
 import type { CaseData, Claim } from '../types/case';
@@ -115,6 +116,7 @@ const Section: React.FC<{ n: number; title: string; children: React.ReactNode }>
 export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
   const caseData = useCaseStore((s) => s.caseData);
   const videoUrl = useCaseStore((s) => s.videoUrl);
+  const scenarioId = useCaseStore((s) => s.scenarioId);
   const digest = useFileDigest(videoUrl);
   const rows = useMemo(() => (caseData ? chronology(caseData) : []), [caseData]);
 
@@ -130,6 +132,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
   const closest = caseData.facts?.closest_approach ?? null;
   // The vehicles this report is about: those in the event, else those in the statements.
   const tileIds = (impact?.tracks ?? closest?.tracks ?? [...new Set(caseData.claims.filter((c) => typeof c.measured?.kmh === 'number').map((c) => c.subject_track))]).slice(0, 2);
+  const source = caseSource(caseData, Boolean(scenarioId));
   const refId = `${(caseData.clip.file || 'case').replace(/\W/g, '').slice(0, 10).toUpperCase()}-${caseData.clip.frames}`;
 
   return (
@@ -160,6 +163,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
               ['Frames', `${caseData.clip.frames} at ${caseData.clip.fps_nominal} fps nominal`],
               ['Resolution', `${caseData.clip.width}×${caseData.clip.height}`],
               ['Camera', caseData.camera_mode === 'dashcam' ? 'Dashcam' : 'Fixed'],
+              ['Result', source.label],
             ].map(([k, v]) => (
               <div key={k}>
                 <dt className="text-[#77756e]">{k}</dt>
@@ -285,6 +289,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
         </Section>
 
         <Section n={6} title="Provenance">
+          <p className="mb-2 text-[13px]"><span className="text-[#161614]">{source.label}.</span> {source.detail}</p>
           {caseData.models?.length ? (
             <dl className="divide-y divide-[#16161412] text-[13px]">
               {caseData.models.map((m) => (

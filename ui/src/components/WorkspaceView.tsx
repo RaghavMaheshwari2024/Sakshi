@@ -8,6 +8,7 @@ import { ClaimsPanel } from './ClaimsPanel';
 import { MasterTimeline } from './MasterTimeline';
 import { CaseTour } from './CaseTour';
 import { ErrorBoundary } from './ErrorBoundary';
+import { CaseSourceBadge } from './CaseSourceBadge';
 import { Button, EmptyState, IconButton, Panel, Segmented, Skeleton } from './ui';
 import { loadScenarioIndex, ScenarioEntry } from '../utils/scenarios';
 import { measuredTracks, speedBeforeImpact, vehicleName } from '../utils/caseFacts';
@@ -123,6 +124,7 @@ export const WorkspaceView: React.FC<{ onOpenProcessing: () => void }> = ({ onOp
               : <span className="measured" title="How well the clicked road points fit a flat road">calibration {caseData.calibration.reproj_rms_m.toFixed(3)} m{caseData.calibration.method === 'satellite' ? ' · satellite' : ''}</span>}
           <span>{caseData.camera_mode === 'dashcam' ? 'Dashcam' : 'Fixed camera'}</span>
         </div>
+        <CaseSourceBadge data={caseData} />
         {!touring && (
           <Button variant="secondary" size="sm" className="ml-auto 2xl:ml-0" icon={<Play className="h-3 w-3 fill-current" />} onClick={() => setTouring(true)}>
             Walk through this case

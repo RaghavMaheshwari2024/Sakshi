@@ -1,4 +1,5 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { BackendStatus, fetchBackendStatus, unlockBackend } from '../utils/api';
 import { ArrowRight, Check, FileAudio, Plus, Trash2, Upload } from 'lucide-react';
 import { Button, Dialog, IconButton, Notice, Segmented } from './ui';
 
@@ -43,6 +44,12 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onC
   const [isDragging, setIsDragging] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [server, setServer] = useState<BackendStatus | null | 'checking'>('checking');
+  const [accessCode, setAccessCode] = useState('');
+
+  useEffect(() => {
+    fetchBackendStatus().then(setServer);
+  }, []);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -102,6 +109,9 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onC
     setSubmitError(null);
     setUploadProgress('Preparing');
     try {
+      if (server && server !== 'checking' && server.code_required && !(await unlockBackend(accessCode))) {
+        throw new Error('That access code is not right.');
+      }
       const formData = new FormData();
       formData.append('video', videoFile);
       formData.append('camera_mode', cameraMode);
@@ -118,7 +128,10 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onC
       formData.append('statements_json', JSON.stringify(payload));
       setUploadProgress('Uploading');
       const response = await fetch('/cases', { method: 'POST', body: formData });
-      if (!response.ok) throw new Error(`The server returned ${response.status}.`);
+      if (!response.ok) {
+        const detail = await response.json().then((j) => j.detail).catch(() => null);
+        throw new Error(detail || `The server returned ${response.status}.`);
+      }
       const resData = await response.json();
       onCaseCreated(resData.id, cameraMode);
     } catch (err) {
@@ -152,6 +165,23 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onC
     >
       <form id="new-case" onSubmit={handleSubmit} className="space-y-6 p-5">
         {submitError && <Notice tone="error">{submitError}</Notice>}
+        {server === null && (
+          <Notice tone="warn">No backend is connected here, so a new case cannot run. The 16 recorded benchmark cases still work.</Notice>
+        )}
+        {server && server !== 'checking' && !server.live && (
+          <Notice tone="warn">This server has no model API key, so a new clip cannot be analysed.</Notice>
+        )}
+        {server && server !== 'checking' && (
+          <p className="text-[12.5px] text-bone-400">
+            This runs the real pipeline on the Meta models and usually takes a few minutes. Limits here: {server.max_upload_mb} MB, {server.max_clip_seconds} s.
+          </p>
+        )}
+        {server && server !== 'checking' && server.code_required && (
+          <label className="block space-y-1 text-[12.5px] text-bone-300">
+            <span>Access code</span>
+            <input type="password" required value={accessCode} autoComplete="off" onChange={(e) => setAccessCode(e.target.value)} className="field w-full" />
+          </label>
+        )}
 
         <section>
           <Heading hint="Under 60 s around the collision works best">Incident clip</Heading>

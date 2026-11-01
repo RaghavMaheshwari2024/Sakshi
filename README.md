@@ -341,3 +341,21 @@ Exactly 4 points always fit, so the report and the UI never present their 0 m er
 speeds and writes the table on the Validation screen. Small rectangles stay honest only through very
 wide intervals; a long rectangle or satellite points are far more useful. These scores come from
 projecting known road positions, not from people clicking real footage or real satellite imagery.
+
+## Hosting a demo
+
+One server can run both the UI and the API:
+
+```bash
+docker build -t sakshi .
+docker run -p 8000:8000 --env-file .env -e SAKSHI_ACCESS_CODE=choose-a-code -v sakshi-data:/app/cases -v sakshi-cache:/app/cache sakshi
+```
+
+Or without Docker, run `npm run build` in `ui/`, then `uvicorn api.app:app`. Open http://localhost:8000.
+
+Every run spends the API key in `MODEL_API_KEY`, so **set `SAKSHI_ACCESS_CODE` on any public server**. It also
+keeps uploaded footage private. `SAKSHI_MAX_UPLOAD_MB`, `SAKSHI_MAX_CLIP_SECONDS` and `SAKSHI_MAX_RUNS` limit use.
+
+Recorded benchmark cases need no backend. Results are labelled by what actually produced them: "Recorded
+benchmark", "Live run" with its call counts, "Re-run from cache", or "Stored tracks". `docs/model_usage_summary.json`
+summarises logged model calls (`python scripts/usage_report.py --export`), and `docs/demo.md` is the demo guide.

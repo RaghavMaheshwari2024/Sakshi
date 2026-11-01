@@ -18,7 +18,7 @@ from typing import Any
 import requests
 
 from .. import cache, config
-from ..usage_log import logged
+from ..usage_log import logged, show
 
 
 def _to_wav(src: Path) -> Path:
@@ -45,15 +45,17 @@ def transcribe(path: str | Path, *, languages: list[str] | None = None,
     key = cache.key_for(config.VOICE_MODEL, cache.file_sha(src), mode, languages)
     hit = cache.get_json("voice", key)
     if hit is not None:
-        with logged(config.VOICE_MODEL, "transcribe statement", cached=True):
-            return hit
+        with logged(config.VOICE_MODEL, "transcribe statement", cached=True) as call:
+            pass
+        show(call, hit.get("transcript", ""))
+        return hit
 
     wav = _to_wav(src)
     request: dict[str, Any] = {"mode": mode, "model": config.VOICE_MODEL, "audioEncoding": "WAV"}
     if languages:
         request["languageBias"] = languages
     try:
-        with logged(config.VOICE_MODEL, "transcribe statement", bytes=wav.stat().st_size):
+        with logged(config.VOICE_MODEL, "transcribe statement", bytes=wav.stat().st_size) as call:
             with wav.open("rb") as audio:
                 r = requests.post(
                     config.META_ASR_URL,
@@ -70,4 +72,5 @@ def transcribe(path: str | Path, *, languages: list[str] | None = None,
         os.unlink(wav)
     out = r.json()
     cache.put_json("voice", key, out)
+    show(call, out.get("transcript", ""))
     return out

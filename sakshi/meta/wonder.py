@@ -25,7 +25,7 @@ import numpy as np
 from openai.types.chat import ChatCompletionMessageParam
 
 from .. import cache, config
-from ..usage_log import logged
+from ..usage_log import logged, show
 from .client import sync_client, text_client_and_model
 
 
@@ -48,11 +48,13 @@ def _chat_json(job: str, messages: list[dict], schema: dict, *, use_private: boo
     key = cache.key_for(model, job, messages, schema, *([temperature] if temperature is not None else []))
     hit = cache.get_json("wonder", key)
     if hit is not None:
-        with logged(label, job, cached=True):
-            return hit
+        with logged(label, job, cached=True) as call:
+            pass
+        show(call, hit)
+        return hit
     kwargs = dict(model=model, messages=cast("list[ChatCompletionMessageParam]", messages),
                   response_format={"type": "json_schema", "json_schema": {"name": job, "schema": schema}})
-    with logged(label, job):
+    with logged(label, job) as call:
         try:
             resp = client.chat.completions.create(**kwargs, **({"temperature": temperature}
                                                               if temperature is not None else {}))
@@ -67,6 +69,7 @@ def _chat_json(job: str, messages: list[dict], schema: dict, *, use_private: boo
         raise RuntimeError(f"{label} returned no content for '{job}'")
     out = json.loads(content)
     cache.put_json("wonder", key, out)
+    show(call, out)
     return out
 
 

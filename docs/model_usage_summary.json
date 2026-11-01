@@ -1,0 +1,105 @@
+{
+ "note": "Summary of logs/model_usage.jsonl. Each line of that log is one model call; cached calls were answered from disk.",
+ "total_calls": 9848,
+ "live_calls": 1115,
+ "cached_calls": 8733,
+ "calendar_days_with_calls": 3,
+ "by_model_and_job": [
+  {
+   "model": "muse-spark-1.3",
+   "job": "read cctv clock",
+   "live": 136,
+   "cached": 547,
+   "seconds": 532.6,
+   "errors": 0
+  },
+  {
+   "model": "muse-spark-1.3",
+   "job": "read traffic light",
+   "live": 682,
+   "cached": 7734,
+   "seconds": 3918.3,
+   "errors": 0
+  },
+  {
+   "model": "muse-wonder-1.0",
+   "job": "describe_scene",
+   "live": 35,
+   "cached": 88,
+   "seconds": 2158.7,
+   "errors": 0
+  },
+  {
+   "model": "muse-wonder-1.0",
+   "job": "extract_claims",
+   "live": 44,
+   "cached": 58,
+   "seconds": 683.5,
+   "errors": 0
+  },
+  {
+   "model": "muse-wonder-1.0",
+   "job": "write_report",
+   "live": 74,
+   "cached": 24,
+   "seconds": 2208.8,
+   "errors": 0
+  },
+  {
+   "model": "muse-wonder-1.0",
+   "job": "write_report_retry",
+   "live": 5,
+   "cached": 2,
+   "seconds": 155.9,
+   "errors": 0
+  },
+  {
+   "model": "sam-3.1",
+   "job": "files.upload",
+   "live": 68,
+   "cached": 0,
+   "seconds": 282.5,
+   "errors": 0
+  },
+  {
+   "model": "sam-3.1",
+   "job": "track 'car'",
+   "live": 23,
+   "cached": 89,
+   "seconds": 978.2,
+   "errors": 0
+  },
+  {
+   "model": "sam-3.1",
+   "job": "track 'motorcycle'",
+   "live": 22,
+   "cached": 89,
+   "seconds": 259.9,
+   "errors": 0
+  },
+  {
+   "model": "sam-3.1",
+   "job": "track 'person'",
+   "live": 3,
+   "cached": 11,
+   "seconds": 40.9,
+   "errors": 0
+  },
+  {
+   "model": "sam-3.1",
+   "job": "track 'traffic light'",
+   "live": 21,
+   "cached": 89,
+   "seconds": 1015.9,
+   "errors": 0
+  },
+  {
+   "model": "sam-3.1",
+   "job": "track 'wheel'",
+   "live": 2,
+   "cached": 2,
+   "seconds": 29.0,
+   "errors": 0
+  }
+ ]
+}

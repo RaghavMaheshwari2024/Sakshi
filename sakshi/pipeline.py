@@ -36,6 +36,7 @@ from .engine import contact as contact_mod
 from .engine import clock as clock_mod
 from .engine import events, homography, signals
 from .engine.kalman import Smoothed
+from . import usage_log
 from .engine.uncertainty import MCConfig, TrackResult, measure, step_displacements
 from .video import crop, ensure_h264_mp4, find_input_video, iter_frames, probe, read_frames
 
@@ -430,6 +431,31 @@ def _models_summary(tracks, stats, statements, scene, party, claims, report, liv
 
 def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] | None = None,
         mc: MCConfig | None = None) -> dict:
+    """Runs the pipeline, reporting each model call as it finishes and recording
+    in the case how many were live, so nothing can pass for live that was not."""
+    calls: list[dict] = []
+
+    def on_call(call: dict) -> None:
+        calls.append(call)
+        progress("model_call", call)
+
+    token = usage_log.observe(on_call)
+    try:
+        case = _run(case_dir, progress, tracks_override, mc, calls)
+    finally:
+        usage_log.stop_observing(token)
+    return case
+
+
+def _run_record(calls: list[dict], tracks_override) -> dict:
+    live = [c for c in calls if not c["cached"]]
+    return {"mode": "replayed_tracks" if tracks_override is not None else "pipeline",
+            "live_calls": len(live), "cached_calls": len(calls) - len(live),
+            "live_seconds": round(sum(c["seconds"] for c in live), 1)}
+
+
+def _run(case_dir: Path, progress: Progress, tracks_override: list[dict] | None,
+         mc: MCConfig | None, calls: list[dict]) -> dict:
     case_dir = Path(case_dir)
     inp = json.loads((case_dir / "case_input.json").read_text())
     src = find_input_video(case_dir)
@@ -595,6 +621,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         "contact": {"mode": contact_mode, "per_vehicle": contact_report, "occluded_frames": occluded},
         "models": _models_summary(tracks, stats, statements, scene, party, checked, report,
                                   live=tracks_override is None, assigned_by_person=bool(inp.get("party_to_track"))),
+        "run": _run_record(calls, tracks_override),
         "private_mode": config.PRIVATE_MODE,
         "clip": {"file": video.name, "frames": info.n, "fps_nominal": info.fps,
                  "width": info.width, "height": info.height},
