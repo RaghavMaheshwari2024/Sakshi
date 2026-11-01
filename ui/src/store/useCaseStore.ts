@@ -104,3 +104,6 @@ export const useCaseStore = create<CaseStoreState>((set, get) => ({
   setReplayMode: (mode) => set({ replayMode: mode }),
   clearHighlight: () => set({ highlightWindow: null }),
 }));
+
+// Dev only: lets browser tests drive the playhead.
+if (import.meta.env.DEV) (window as any).sakshiStore = useCaseStore;

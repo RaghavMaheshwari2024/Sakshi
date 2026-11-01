@@ -39,22 +39,29 @@ def _img_part(img_bgr: np.ndarray, max_side: int = 1024) -> dict:
     return {"type": "image_url", "image_url": {"url": url}}
 
 
-def _chat_json(job: str, messages: list[dict], schema: dict, *, use_private: bool) -> dict:
+def _chat_json(job: str, messages: list[dict], schema: dict, *, use_private: bool,
+               temperature: float | None = None) -> dict:
     if use_private:
         client, model, label = text_client_and_model(config.WONDER_MODEL)
     else:
         client, model, label = sync_client(), config.WONDER_MODEL, config.WONDER_MODEL
-    key = cache.key_for(model, job, messages, schema)
+    key = cache.key_for(model, job, messages, schema, *([temperature] if temperature is not None else []))
     hit = cache.get_json("wonder", key)
     if hit is not None:
         with logged(label, job, cached=True):
             return hit
+    kwargs = dict(model=model, messages=cast("list[ChatCompletionMessageParam]", messages),
+                  response_format={"type": "json_schema", "json_schema": {"name": job, "schema": schema}})
     with logged(label, job):
-        resp = client.chat.completions.create(
-            model=model,
-            messages=cast("list[ChatCompletionMessageParam]", messages),
-            response_format={"type": "json_schema", "json_schema": {"name": job, "schema": schema}},
-        )
+        try:
+            resp = client.chat.completions.create(**kwargs, **({"temperature": temperature}
+                                                              if temperature is not None else {}))
+        except Exception as e:  # noqa: BLE001
+            # A model or server that rejects the temperature setting: ask without it
+            # rather than fail the case. Any other error is raised as before.
+            if temperature is None or "temperature" not in str(e).lower():
+                raise
+            resp = client.chat.completions.create(**kwargs)
     content = resp.choices[0].message.content
     if content is None:
         raise RuntimeError(f"{label} returned no content for '{job}'")
@@ -126,6 +133,9 @@ def describe_scene(labelled_keyframes: list[np.ndarray], statements: list[dict],
         what = "come closest to each other (a near miss, no contact)" if near_miss else "collide"
         hint = (f"The measurements show that {' and '.join(involved)} {what}; the people giving "
                 "statements are most likely in those, one statement per road user. ")
+        if len(statements) > len(involved):
+            hint += ("There are more statements than road users in that collision, so some speakers "
+                     "were in OTHER labelled vehicles: match them by their own description too. ")
     if closeups:
         hint += f"The last {len(closeups)} images are enlarged close-ups of those road users, labelled with their ids. "
     text = (
@@ -167,6 +177,11 @@ CLAIM_SCHEMA = {
                     },
                     "quantity": {
                         "type": "string",
+                        "description": (
+                            "speed_kmh: a speed (number in value_number); signal_state_at_stop_line: the "
+                            "colour of the light; braked_before_impact: whether someone braked (yes/no); "
+                            "stopped_before_impact: whether someone was standing still (yes/no)"
+                        ),
                         "enum": [
                             "speed_kmh",
                             "signal_state_at_stop_line",
@@ -181,7 +196,8 @@ CLAIM_SCHEMA = {
                     },
                     "value_text": {
                         "type": ["string", "null"],
-                        "description": "red/amber/green, or yes/no, when the value is not a number",
+                        "description": ("red/amber/green for a signal; exactly 'yes' or 'no' for braked/stopped "
+                                        "claims (what the speaker asserts); null for a speed"),
                     },
                     "when": {
                         "type": "string",
@@ -211,17 +227,24 @@ CLAIM_SCHEMA = {
 }
 
 
-def extract_claims(statements: list[dict], party_to_track: dict[str, str]) -> list[dict]:
+def extract_claims(statements: list[dict], party_to_track: dict[str, str],
+                   previous: list[dict] | None = None, problems: list[str] | None = None) -> list[dict]:
     """statements: [{"id","speaker","text"}]; party_to_track: statement id -> track id
     of the speaker's own vehicle. Claims about 'the other vehicle' should use the
-    other involved track id, listed in `involved_tracks`."""
+    other involved track id, listed in `involved_tracks`.
+
+    Temperature 0, so the same statements give the same claims. With `previous`
+    and `problems` (from claims.problems), the model is shown its earlier answer
+    and what was wrong with it, and asked for the corrected full list."""
     involved = sorted(set(party_to_track.values()))
     text = (
         "Extract every factual, checkable claim from these crash statements. Only "
         "include claims about speed, the traffic signal, braking or stopping. Keep the "
         "speaker's exact words in `quote`. Resolve 'I'/'me' to the speaker's track and "
-        "'the other vehicle' to the other involved track. Use null when no value is "
-        "stated. A signal claim is about the stop line, so its `when` is at_stop_line. "
+        "'the other vehicle' to the other involved track. ONE claim per fact: a speed, a "
+        "signal colour and a braking yes/no in the same sentence are three separate "
+        "claims. Do not output a claim that has no stated value. A signal claim is about "
+        "the stop line, so its `when` is at_stop_line. "
         "A general speed ('I was doing 30') is unspecified; use at_impact only when "
         "the speaker says 'when we hit' or similar. Statements may be in Hindi or "
         "English; quote them as given.\n\n"
@@ -232,12 +255,16 @@ def extract_claims(statements: list[dict], party_to_track: dict[str, str]) -> li
     schema = _pin(CLAIM_SCHEMA, ["properties", "claims", "items", "properties", "statement_id"],
                   [s["id"] for s in statements])
     schema = _pin(schema, ["properties", "claims", "items", "properties", "subject_track"], involved)
-    out = _chat_json(
-        "extract_claims",
-        [{"role": "user", "content": text}],
-        schema,
-        use_private=config.PRIVATE_MODE,
-    )
+    messages: list[dict] = [{"role": "user", "content": text}]
+    job = "extract_claims"
+    if previous is not None and problems:
+        job = "extract_claims_retry"
+        messages += [
+            {"role": "assistant", "content": json.dumps({"claims": previous}, ensure_ascii=False)},
+            {"role": "user", "content": "Some of these claims are malformed:\n- " + "\n- ".join(problems)
+             + "\nReturn the complete, corrected list of claims (all of them, not only the fixed ones)."},
+        ]
+    out = _chat_json(job, messages, schema, use_private=config.PRIVATE_MODE, temperature=0)
     return out["claims"]
 
 
@@ -246,10 +273,8 @@ REPORT_SCHEMA = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "3 to 6 plain sentences for a non-expert"},
-        "limitations": {"type": "array", "items": {"type": "string"},
-                        "description": "what the footage or method cannot establish"},
     },
-    "required": ["summary", "limitations"],
+    "required": ["summary"],
     "additionalProperties": False,
 }
 
@@ -272,8 +297,12 @@ def fact_lines(facts: dict) -> tuple[list[str], list[str]]:
     if imp:
         timeline.append(f"t = {imp['t']} s: impact between {imp['tracks'][0]} and {imp['tracks'][1]} "
                         f"(timing uncertainty about {imp['t_sigma']} s).")
+    ca = facts.get("closest_approach")
+    if ca and not imp:
+        timeline.append(f"t = {ca['t']} s: closest approach between {ca['tracks'][0]} and {ca['tracks'][1]}, "
+                        f"{ca['gap_m']} m apart; no impact.")
     for tid, sp in (facts.get("speeds") or {}).items():
-        w = sp.get("just_before_impact")
+        w = sp.get("just_before_impact") or sp.get("just_before_closest_approach")
         if w:
             timeline.append(f"{tid}: {w['kmh']} km/h (90% interval {w['lo90']} to {w['hi90']}) "
                             f"from t = {w['t0']} to {w['t1']} s.")
@@ -281,6 +310,49 @@ def fact_lines(facts: dict) -> tuple[list[str], list[str]]:
     findings = [f"{c['statement_id']}: \"{c['quote']}\": {VERDICT_WORDS.get(c['verdict'], c['verdict'])}. "
                 f"{c['reason'][:1].upper() + c['reason'][1:]}." for c in facts.get("claims") or []]
     return timeline, findings
+
+CLOCK_WORDS = {
+    "clock_ticks+motion": "Frame times come from the burned-in clock; frames the recorder dropped were "
+                          "placed using the vehicles' own motion.",
+    "clock_ticks": "Frame times come from the burned-in clock; where dropped frames fall within each "
+                   "second is not known, which the speed intervals include.",
+    "container_pts": "Frame times come from the video file's own timestamps (no burned-in clock).",
+    "container_pts_even": "No burned-in clock and evenly spaced file timestamps: frames the recorder "
+                          "dropped cannot be seen, so the speed intervals allow speeds up to about 20% "
+                          "higher than the file suggests.",
+    "nominal_fps": "No burned-in clock and no usable file timestamps: frame times assume the nominal "
+                   "frame rate, and the speed intervals allow up to about 20% dropped frames.",
+}
+
+
+def limitation_lines(facts: dict) -> list[str]:
+    """The report's limitations, written by code from the facts. (Left to the
+    model they were once invented: 'the evaluation was conducted by skilled and
+    experienced personnel'. A forensic report must not contain that.)"""
+    out = [CLOCK_WORDS.get(facts.get("clock_method"), f"Clock method: {facts.get('clock_method')}.")]
+    if facts.get("calibration_rms_m") is not None:
+        out.append(f"Road calibration error: {facts['calibration_rms_m']} m (how well the clicked road "
+                   "points fit a flat road); positions assume a flat road.")
+    if not facts.get("impact"):
+        ca = facts.get("closest_approach")
+        out.append("No impact found in the footage" + (
+            f": speeds are measured around the closest approach (t = {ca['t']} s, {ca['gap_m']} m apart)."
+            if ca else "."))
+    else:
+        status = (facts.get("momentum_check") or {}).get("status")
+        if status and status != "consistent":
+            out.append("The momentum check after the impact did not balance (" + status + "): after contact "
+                       "the vehicles overlap in the image, so post-impact motion is not reliable. Speeds "
+                       "before the impact are measured separately and are not affected.")
+    if not facts.get("signal_changes"):
+        note = facts.get("signal_note") or "no traffic light was read"
+        out.append(f"Traffic-light claims cannot be checked: {note}.")
+    unread = [c for c in facts.get("claims") or [] if str(c.get("reason", "")).startswith("could not read")]
+    if unread:
+        out.append(f"{len(unread)} claim(s) could not be read reliably from the statements and were not checked.")
+    out.append("Measurements come from one camera; they support expert review and do not determine fault.")
+    return out
+
 
 _NUM = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
 
@@ -319,16 +391,15 @@ def unsupported_numbers(report: dict, facts: dict) -> list[str]:
 
 def write_report(facts: dict) -> dict:
     """`facts` holds only engine outputs (speeds with intervals, times, verdicts).
-    The timeline and claim findings are written by code (`fact_lines`); Muse
-    Wonder writes the plain-language summary and the limitations, and every
-    number it uses is checked against the facts."""
+    The timeline, claim findings and limitations are written by code
+    (`fact_lines`, `limitation_lines`); Muse Wonder writes only the
+    plain-language summary, and every number in it is checked against the facts."""
     timeline, findings = fact_lines(facts)
     base = (
         "You are writing the summary of a crash-reconstruction report for a surveyor, "
         "insurer or lawyer. The measured timeline and the claim findings below are "
-        "already written; summarise them in 3 to 6 plain sentences, then list the "
-        "limitations (for example: what the footage cannot show, the clock method, a "
-        "failed momentum check, a claim that cannot be checked).\n"
+        "already written; summarise them in 3 to 6 plain sentences. Do not list "
+        "limitations or assumptions: those are written separately.\n"
         "Rules: use only numbers that appear below, copied exactly; give a speed only "
         "with its 90% interval; never say who is at fault or whether a law was broken; "
         "do not add events, places or road users that are not listed.\n\n"
@@ -352,6 +423,11 @@ def write_report(facts: dict) -> dict:
         ]
         report = _chat_json("write_report_retry", messages, REPORT_SCHEMA, use_private=config.PRIVATE_MODE)
         bad = unsupported_numbers(report, facts)
+    # Only the summary is the model's. Drop anything it appended after it
+    # (a "Limitations:" block was seen); limitations are written by code.
+    report["summary"] = re.split(r"\n\s*(?:limitations|assumptions)\s*:", report["summary"],
+                                 flags=re.IGNORECASE)[0].strip()
+    report["limitations"] = limitation_lines(facts)
     report["timeline"], report["claim_findings"] = timeline, findings
     report["validator"] = {"passed": not bad, "unsupported_numbers": bad}
     return report

@@ -27,6 +27,15 @@ export interface CalibrationInfo {
   reproj_rms_m: number;
   reproj_max_m: number;
   stop_line_m: [number, number][] | null;
+  /** Camera pose recovered from the calibration (for the 3D replay). */
+  camera?: {
+    focal_px: number;
+    fov_h_deg: number;
+    position_m: [number, number, number];
+    look_at_m: [number, number] | null;
+    pitch_down_deg: number;
+    up_sign: number;
+  } | null;
 }
 
 export interface TrackFrame {
@@ -125,6 +134,7 @@ export interface CaseData {
     claims: any[];
     clock_method: string;
     calibration_rms_m: number;
+    signal_track?: string | null;
   };
   signals: Record<string, SignalChange[]>;
   statements: Statement[];

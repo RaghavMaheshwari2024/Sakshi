@@ -12,6 +12,7 @@ import { CalibrationView } from './components/CalibrationView';
 import { ProcessingModal } from './components/ProcessingModal';
 import { NewCaseModal } from './components/NewCaseModal';
 import { InvestigatorGuideModal } from './components/InvestigatorGuideModal';
+import { Replay3D, ReplayControls } from './components/Replay3D';
 import { Loader2, AlertCircle, Cpu, Eye } from 'lucide-react';
 import { CaseData } from './types/case';
 
@@ -118,6 +119,16 @@ export const App: React.FC = () => {
             Retry Ingestion
           </button>
         </div>
+      </div>
+    );
+  }
+
+  // Full-screen 3D replay (for recording the demo and the X clip): open /?replay3d
+  if (caseData && new URLSearchParams(window.location.search).has('replay3d')) {
+    return (
+      <div className="flex h-screen w-screen flex-col gap-2 bg-zinc-950 p-3">
+        <div className="min-h-0 flex-1"><Replay3D /></div>
+        <ReplayControls />
       </div>
     );
   }

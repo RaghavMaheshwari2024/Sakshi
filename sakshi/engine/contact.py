@@ -109,3 +109,41 @@ def wheel_contacts(tracks: list[dict], H: np.ndarray, vehicle_concepts=("car", "
                            "first_wheel_frame": frames[first_k]["i"]}
         out.append({**t, "frames": frames})
     return out, report
+
+
+def drop_occluded(tracks: list[dict], movers: set[str], margin_px: float = 3.0) -> tuple[list[dict], dict]:
+    """Remove contact points that another road user hides.
+
+    When one vehicle is in front of another (its box reaches lower in the
+    image, i.e. nearer the camera), the rear vehicle's lower edge disappears
+    behind it and the lowest VISIBLE pixel of its mask sits on the front
+    vehicle's outline. That point stops moving with the rear vehicle, so it
+    reads as braking. Typical in a rear-end crash seen from ahead. Such frames
+    are treated as unobserved; the smoother carries the motion across them.
+    Returns (tracks, {track id: frames dropped})."""
+    boxes: dict[int, list[tuple[str, list[float]]]] = {}
+    for t in tracks:
+        if t["concept"] in movers:
+            for f in t["frames"]:
+                boxes.setdefault(f["i"], []).append((t["id"], f["box"]))
+    out, report = [], {}
+    for t in tracks:
+        if t["concept"] not in movers:
+            out.append(t)
+            continue
+        frames, n = [], 0
+        for f in t["frames"]:
+            p = f.get("contact_px")
+            if p:
+                for oid, ob in boxes.get(f["i"], []):
+                    if oid == t["id"] or ob[3] <= f["box"][3]:
+                        continue  # itself, or not in front
+                    if ob[0] - margin_px <= p[0] <= ob[2] + margin_px and ob[1] - margin_px <= p[1] <= ob[3] + margin_px:
+                        f = {**f, "contact_px": None, "occluded_by": oid}
+                        n += 1
+                        break
+            frames.append(f)
+        if n:
+            report[t["id"]] = n
+        out.append({**t, "frames": frames})
+    return out, report

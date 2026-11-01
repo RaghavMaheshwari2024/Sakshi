@@ -65,14 +65,34 @@ def test_no_impact_for_cars_side_by_side_in_adjacent_lanes():
 
 def test_impact_still_found_for_a_closing_collision():
     t = np.arange(0, 2, 0.04)
-    pa = np.c_[12 * t - 12, 0 * t]                      # east at 12 m/s
-    pb = np.c_[0 * t, -8 * t + 8]                       # south at 8 m/s, meets at t = 1
-    res = {"car-0": _result("car-0", t, pa, np.c_[12 + 0 * t, 0 * t]),
-           "car-1": _result("car-1", t, pb, np.c_[0 * t, -8 + 0 * t])}
+    # East at 12 m/s and south at 8 m/s, meeting at t = 1; after contact they
+    # move on together at the momentum-weighted velocity (a real collision).
+    va, vb = np.array([12.0, 0]), np.array([0, -8.0])
+    vc = (1500 * va + 1200 * vb) / 2700
+    after = np.clip(t - 1.0, 0, None)[:, None]
+    pa = np.where(t[:, None] <= 1, np.c_[12 * t - 12, 0 * t], vc * after)
+    pb = np.where(t[:, None] <= 1, np.c_[0 * t, -8 * t + 8], vc * after)
+    vel_a = np.where(t[:, None] <= 1, va, vc)
+    vel_b = np.where(t[:, None] <= 1, vb, vc)
+    res = {"car-0": _result("car-0", t, pa, vel_a), "car-1": _result("car-1", t, pb, vel_b)}
     tracks = [{"id": "car-0", "concept": "car", "frames": _boxes(len(t), 0)},
               {"id": "car-1", "concept": "car", "frames": _boxes(len(t), 30)}]
     imp = events.detect_impacts(res, tracks)
-    assert len(imp) == 1 and 0.6 <= imp[0]["t"] <= 1.0
+    assert len(imp) == 1 and 0.6 <= imp[0]["t"] <= 1.0 and imp[0]["confirmed"] is True
+
+
+def test_no_impact_for_oncoming_cars_passing_in_adjacent_lanes():
+    # Planned for the crowded-junction scenario: an oncoming car passes A 3.5 m
+    # to the side at 14 + 8 m/s closing speed. Gap, box overlap and closing
+    # speed all look like a crash; neither car's motion changes.
+    t = np.arange(0, 3, 0.04)
+    pa = np.c_[14 * t - 21, 0 * t]                      # east
+    pb = np.c_[-8 * t + 12, 0 * t + 3.5]                # west, one lane over; abeam at t = 1.5
+    res = {"car-0": _result("car-0", t, pa, np.c_[14 + 0 * t, 0 * t]),
+           "car-1": _result("car-1", t, pb, np.c_[-8 + 0 * t, 0 * t])}
+    tracks = [{"id": "car-0", "concept": "car", "frames": _boxes(len(t), 0)},
+              {"id": "car-1", "concept": "car", "frames": _boxes(len(t), 30)}]
+    assert events.detect_impacts(res, tracks) == []
 
 
 def test_stop_line_speed_claim_without_stop_line_is_cant_tell():

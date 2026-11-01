@@ -42,6 +42,29 @@ def _closing_speed(ra: TrackResult, ka: int, rb: TrackResult, kb: int) -> float:
     return float(-(d @ (ra.nominal.vel[ka] - rb.nominal.vel[kb])) / n)
 
 
+def _mean_vel(r: TrackResult, t0: float, t1: float) -> np.ndarray | None:
+    m = (r.nominal.t >= t0) & (r.nominal.t <= t1)
+    return r.nominal.vel[m].mean(0) if m.sum() >= 3 else None
+
+
+def motion_changed(ra: TrackResult, rb: TrackResult, t: float, before=(0.6, 0.15), after=(0.25, 0.8),
+                   min_ms: float = 1.5, share: float = 0.3) -> bool | None:
+    """Did contact at t change how the two move? A collision always does: the
+    struck vehicle is pushed, the striking one slows, their relative velocity
+    collapses. Two vehicles that only pass close (oncoming cars in adjacent
+    lanes) carry on exactly as before. True if either velocity, or the relative
+    velocity, changes by at least `share` of the closing speed before contact
+    (and at least `min_ms`). None if there is too little footage after t to tell."""
+    va0, vb0 = _mean_vel(ra, t - before[0], t - before[1]), _mean_vel(rb, t - before[0], t - before[1])
+    va1, vb1 = _mean_vel(ra, t + after[0], t + after[1]), _mean_vel(rb, t + after[0], t + after[1])
+    if va0 is None or vb0 is None or va1 is None or vb1 is None:
+        return None
+    rel0 = float(np.linalg.norm(va0 - vb0))
+    change = max(float(np.linalg.norm(va1 - va0)), float(np.linalg.norm(vb1 - vb0)),
+                 float(np.linalg.norm((va1 - vb1) - (va0 - vb0))))
+    return change >= max(min_ms, share * rel0)
+
+
 def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
                    max_gap_m: float = 4.5, min_closing_ms: float = 1.0,
                    lookback_s: float = 0.6) -> list[dict]:
@@ -49,7 +72,13 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
     positions are within `max_gap_m`, AND they were closing on each other at
     `min_closing_ms` or more in the `lookback_s` before. The closing test rejects
     vehicles that only look close: side by side in adjacent lanes, or one
-    following another at the same speed, never close the gap."""
+    following another at the same speed, never close the gap.
+
+    A candidate is then confirmed by `motion_changed`: oncoming vehicles passing
+    in adjacent lanes DO close the gap fast, but neither is pushed or slowed,
+    so they are not an impact (the search goes on for a later, real one). With
+    too little footage after the candidate to tell, it is kept and marked
+    `confirmed: null`."""
     by_id = {t["id"]: t for t in tracks}
     impacts = []
     ids = [i for i in results if by_id[i]["concept"] in MOVERS]
@@ -72,73 +101,17 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
             recent = [c for c, tc in closing.values() if t_i - lookback_s <= tc <= t_i]
             if gap <= max_gap_m and recent and max(recent) >= min_closing_ms:
                 t = float(ra.nominal.t[ka])
+                confirmed = motion_changed(ra, rb, t)
+                if confirmed is False:
+                    continue  # they only passed close
                 dt = float(np.median(np.diff(ra.nominal.t))) if len(ra.nominal.t) > 1 else 0.04
                 impacts.append(
                     {"type": "impact", "tracks": [a, b], "i": int(i), "t": round(t, 3),
-                     "t_sigma": round(dt, 3), "ground_gap_m": round(gap, 2),
+                     "t_sigma": round(dt, 3), "ground_gap_m": round(gap, 2), "confirmed": confirmed,
                      "xy": np.round((ra.nominal.pos[ka] + rb.nominal.pos[kb]) / 2, 2).tolist()}
                 )
                 break
     return sorted(impacts, key=lambda e: e["t"])
-
-
-def _hinge_sse(t: np.ndarray, z: np.ndarray, tb: float | None) -> float:
-    """Squared residuals (metres^2) of one smooth motion through the window,
-    plus, if tb is given, a sudden change of velocity and acceleration at tb
-    (position stays continuous). Fitted by least squares; same data for every tb."""
-    tc = t - t.mean()
-    cols = [np.ones_like(tc), tc, tc ** 2]
-    if tb is not None:
-        h = np.clip(t - tb, 0, None)
-        cols += [h, h ** 2]
-    A = np.stack(cols, 1)
-    coef, *_ = np.linalg.lstsq(A, z, rcond=None)
-    return float(((A @ coef - z) ** 2).sum())
-
-
-def refine_impact(impact: dict, tracks: list[dict], H: np.ndarray, t_frames: np.ndarray,
-                  before_s: float = 0.25, after_s: float = 0.8, margin_s: float = 0.8,
-                  max_ratio: float = 0.5) -> dict:
-    """Move the impact to where the motion actually breaks.
-
-    `detect_impacts` fires on the first frame the two road users are close
-    (ground gap <= 4.5 m), which can be a few metres before they touch: the
-    contact points are wheels or the lowest mask pixel, not the bumpers. A
-    collision is a sudden change of velocity. So, over a fixed window around
-    that first frame, fit each vehicle's raw ground track with one smooth motion
-    that is allowed a velocity jump at a candidate frame, and take the frame
-    where both vehicles' jumps explain the motion best. Kept only if the jump
-    clearly helps (residual below `max_ratio` of the no-jump fit, on average);
-    otherwise the original frame stands."""
-    from . import homography as hg
-
-    by_id = {t["id"]: t for t in tracks}
-    t0 = impact["t"]
-    lo, hi = t0 - before_s - margin_s, t0 + after_s + margin_s
-    series = []
-    for tid in impact["tracks"]:
-        pts = [(f["i"], f["contact_px"]) for f in by_id[tid]["frames"]
-               if f.get("contact_px") and 0 <= f["i"] < len(t_frames) and lo <= t_frames[f["i"]] <= hi]
-        if len(pts) < 12:
-            return {**impact, "method": "first_close"}
-        idx = np.array([p[0] for p in pts])
-        z = hg.img_to_ground(H, np.array([p[1] for p in pts], float))
-        series.append((idx, t_frames[idx], z, _hinge_sse(t_frames[idx], z, None)))
-    cand = sorted({int(i) for idx, tt, _, _ in series for i, t in zip(idx, tt) if t0 - before_s <= t <= t0 + after_s})
-    if len(cand) < 3:
-        return {**impact, "method": "first_close"}
-    ratio = np.array([[_hinge_sse(tt, z, float(t_frames[i])) / max(base, 1e-9) for _, tt, z, base in series]
-                      for i in cand])
-    k = int(np.argmin(ratio.mean(1)))
-    if ratio[k].mean() > max_ratio:
-        return {**impact, "method": "first_close"}
-    best = cand[k]
-    p = [z[int(np.argmin(np.abs(idx - best)))] for idx, _, z, _ in series]
-    out = dict(impact)
-    out.update({"i": int(best), "t": round(float(t_frames[best]), 3), "first_close_t": impact["t"],
-                "method": "motion_break", "ground_gap_m": round(float(np.linalg.norm(p[0] - p[1])), 2),
-                "xy": np.round((p[0] + p[1]) / 2, 2).tolist()})
-    return out
 
 
 def closest_approach(results: dict[str, TrackResult], tracks: list[dict]) -> dict | None:
@@ -170,11 +143,35 @@ def window_speed(res: TrackResult, t0: float, t1: float) -> dict | None:
             "lo90": round(float(lo), 1), "hi90": round(float(hi), 1)}
 
 
+MIN_BRAKE_DROP_KMH = 3.0  # braking must leave the vehicle at least this much slower
+
+
+def _lasting_drop(res: TrackResult, t_s: float, t_e: float, t_impact: float) -> np.ndarray | None:
+    """Per Monte Carlo sample: speed before the run (median over the 1.5 s
+    before it) minus speed after it (until 0.5 s later or just before impact;
+    if the run lasts until contact, its last 0.2 s)."""
+    t = res.nominal.t
+    ref = (t >= t_s - 1.5) & (t <= t_s - 0.1)
+    post = (t >= t_e) & (t <= min(t_e + 0.5, t_impact - 0.05))
+    if post.sum() < 2:  # braking lasted until contact: its last 0.2 s
+        post = (t >= max(t_s, t_e - 0.2)) & (t <= t_e)
+    if ref.sum() < 3 or post.sum() < 1:
+        return None
+    return np.median(res.speed_samples[:, ref], 1) - res.speed_samples[:, post].mean(1)
+
+
 def braking_onset(res: TrackResult, t_impact: float, min_duration_s: float = 0.25,
-                  lookback_s: float = 3.0) -> dict:
+                  lookback_s: float = 3.0, min_share: float = 0.9) -> dict:
     """Latest sustained run of deceleration beyond BRAKE_DECEL in the
     `lookback_s` before impact. The run need not last until contact: a driver
-    may brake hard and release (or the wheels lock) just before the hit."""
+    may brake hard and release (or the wheels lock) just before the hit.
+
+    A run only counts if it left the vehicle LASTINGLY slower: in at least
+    `min_share` of the Monte Carlo samples, the speed after the run is
+    MIN_BRAKE_DROP_KMH below the speed before it. A frame the recorder dropped
+    without trace (or a short tracking wobble) makes the speed jump up and come
+    back down; the way back down looks like braking but leaves the speed where
+    it was, and every vehicle in view shows it at the same moment."""
     a = np.nan_to_num(res.nominal.long_acc, nan=0.0)
     t = res.nominal.t
     idx = np.flatnonzero((t < t_impact) & (t >= t_impact - lookback_s))
@@ -188,13 +185,18 @@ def braking_onset(res: TrackResult, t_impact: float, min_duration_s: float = 0.2
     if start is not None:
         runs.append((start, int(idx[-1])))
     runs = [(s, e) for s, e in runs if t[e] - t[s] >= min_duration_s]
-    if not runs:
-        return {"detected": False}
-    s, e = runs[-1]
-    return {"detected": True, "t": round(float(t[s]), 3),
-            "seconds_before_impact": round(float(t_impact - t[s]), 2),
-            "ended_before_impact_s": round(float(t_impact - t[e]), 2),
-            "peak_decel_ms2": round(float(a[s:e + 1].min()), 2)}
+    rejected = 0
+    for s, e in reversed(runs):
+        drop = _lasting_drop(res, float(t[s]), float(t[e]), t_impact)
+        if drop is None or np.mean(drop >= MIN_BRAKE_DROP_KMH) < min_share:
+            rejected += 1
+            continue
+        return {"detected": True, "t": round(float(t[s]), 3),
+                "seconds_before_impact": round(float(t_impact - t[s]), 2),
+                "ended_before_impact_s": round(float(t_impact - t[e]), 2),
+                "peak_decel_ms2": round(float(a[s:e + 1].min()), 2),
+                "speed_drop_kmh": round(float(np.median(drop)), 1)}
+    return {"detected": False, **({"rejected_runs": rejected} if rejected else {})}
 
 
 def momentum_check(impact: dict, results: dict[str, TrackResult], tracks: list[dict],

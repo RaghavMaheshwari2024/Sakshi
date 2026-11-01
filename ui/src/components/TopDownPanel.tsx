@@ -225,6 +225,13 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
       horizontalLines.push(gy);
     }
 
+    // Graph paper: fine lines every metre (2 m on very large scenes) between the labelled ones.
+    const minorStep = maxSpan > 120 ? 2 : 1;
+    const minorX: number[] = [];
+    for (let gx = startX; gx <= endX; gx += minorStep) if (gx % gridStep !== 0) minorX.push(gx);
+    const minorY: number[] = [];
+    for (let gy = startY; gy <= endY; gy += minorStep) if (gy % gridStep !== 0) minorY.push(gy);
+
     return {
       bounds: {
         minX: paddedMinX,
@@ -238,6 +245,12 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
         gridStep,
         verticalLines,
         horizontalLines,
+        minorX,
+        minorY,
+        startX,
+        endX,
+        startY,
+        endY,
       },
       stopLine: caseData?.calibration?.stop_line_m || null,
     };
@@ -428,6 +441,17 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
           <g transform={worldTransform}>
             {/* Road Grid Lines & Coordinates */}
             <g id="road-grid-layer" className="pointer-events-none opacity-90">
+              {/* Graph paper: the sheet, then the fine 1 m lines */}
+              <rect x={roadGrid.startX} y={-roadGrid.endY} width={roadGrid.endX - roadGrid.startX}
+                    height={roadGrid.endY - roadGrid.startY} fill="#0f1218" />
+              {roadGrid.minorX.map((gx) => (
+                <line key={`mx-${gx}`} x1={gx} y1={-roadGrid.startY} x2={gx} y2={-roadGrid.endY}
+                      stroke="#22333d" strokeWidth={0.09} />
+              ))}
+              {roadGrid.minorY.map((gy) => (
+                <line key={`my-${gy}`} x1={roadGrid.startX} y1={-gy} x2={roadGrid.endX} y2={-gy}
+                      stroke="#22333d" strokeWidth={0.09} />
+              ))}
               {/* Vertical Grid Lines (Constant X) */}
               {roadGrid.verticalLines.map((gx) => {
                 const isAxis = gx === 0;
@@ -435,18 +459,17 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                   <g key={`grid-x-${gx}`}>
                     <line
                       x1={gx}
-                      y1={-bounds.minY}
+                      y1={-roadGrid.startY}
                       x2={gx}
-                      y2={-bounds.maxY}
-                      stroke={isAxis ? '#3f3f46' : '#27272a'}
-                      strokeWidth={isAxis ? 0.12 : 0.05}
-                      strokeDasharray={isAxis ? undefined : '0.4 0.6'}
+                      y2={-roadGrid.endY}
+                      stroke={isAxis ? '#5b7787' : '#3d5a6a'}
+                      strokeWidth={isAxis ? 0.2 : 0.15}
                     />
                     {/* Tick Label */}
                     <text
                       x={gx}
                       y={-bounds.minY - 0.6}
-                      fill={isAxis ? '#a1a1aa' : '#52525b'}
+                      fill={isAxis ? '#d4d4d8' : '#8b9aa6'}
                       fontSize="0.75"
                       fontFamily="JetBrains Mono, monospace"
                       textAnchor="middle"
@@ -465,19 +488,18 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                 return (
                   <g key={`grid-y-${gy}`}>
                     <line
-                      x1={bounds.minX}
+                      x1={roadGrid.startX}
                       y1={svgY}
-                      x2={bounds.maxX}
+                      x2={roadGrid.endX}
                       y2={svgY}
-                      stroke={isAxis ? '#3f3f46' : '#27272a'}
-                      strokeWidth={isAxis ? 0.12 : 0.05}
-                      strokeDasharray={isAxis ? undefined : '0.4 0.6'}
+                      stroke={isAxis ? '#5b7787' : '#3d5a6a'}
+                      strokeWidth={isAxis ? 0.2 : 0.15}
                     />
                     {/* Tick Label */}
                     <text
                       x={bounds.minX + 0.8}
                       y={svgY + 0.25}
-                      fill={isAxis ? '#a1a1aa' : '#52525b'}
+                      fill={isAxis ? '#d4d4d8' : '#8b9aa6'}
                       fontSize="0.75"
                       fontFamily="JetBrains Mono, monospace"
                       textAnchor="start"
@@ -943,7 +965,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
           </div>
           <div className="h-4 w-[1px] bg-zinc-800" />
           <div className="flex flex-col text-[10px] leading-tight text-zinc-400">
-            <span>GRID: {roadGrid.gridStep}m intervals</span>
+            <span>GRID: 1 m squares, labelled every {roadGrid.gridStep} m</span>
             <span>FRAME: {isEgoMode ? 'CAR-CENTRED EGO' : 'ROAD-FIXED JUNCTION'}</span>
           </div>
         </div>
