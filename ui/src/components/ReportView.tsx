@@ -170,7 +170,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
               </dd>
               {impact && <dd className="font-mono text-[11.5px] text-[#77756e]">±{impact.t_sigma.toFixed(3)} s</dd>}
             </div>
-            {ids.slice(0, 2).map((id) => {
+            {(impact?.tracks ?? caseData.facts?.closest_approach?.tracks ?? ids.slice(0, 2)).slice(0, 2).map((id) => {
               const sp = speedBeforeImpact(caseData, id);
               return (
                 <div key={id} className="bg-[#faf8f3] p-3 print:bg-white">
@@ -182,7 +182,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
             })}
             <div className="bg-[#faf8f3] p-3 print:bg-white">
               <dt className="text-[12px] text-[#77756e]">Momentum check</dt>
-              <dd className="mt-1 font-mono text-[17px] text-[#161614]">{momentum?.status ?? (impact ? 'Not run' : 'No impact')}</dd>
+              <dd className="mt-1 font-mono text-[17px] text-[#161614]">{momentum?.status === 'insufficient_data' ? 'Not enough data' : momentum?.status ?? (impact ? 'Not run' : 'No impact')}</dd>
               {momentum?.best_relative_residual != null && (
                 <dd className="font-mono text-[11.5px] text-[#77756e]">residual {(momentum.best_relative_residual * 100).toFixed(1)}%</dd>
               )}

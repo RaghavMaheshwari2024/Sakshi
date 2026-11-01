@@ -184,6 +184,16 @@ def labelled_keyframes(video: Path, tracks: list[dict], n_frames: int, around: i
     return out, [tid for tid, f in close.items() if f["i"] in frames]
 
 
+def _track_views(tracks: list[dict], width: int, height: int) -> dict:
+    """Each road user's largest view, so a person can tell which vehicle a track is."""
+    views = {}
+    for t in tracks:
+        if t["concept"] in events.MOVERS and t["frames"]:
+            f = max(t["frames"], key=lambda f: (f["box"][2] - f["box"][0]) * (f["box"][3] - f["box"][1]))
+            views[t["id"]] = {"i": f["i"], "box": f["box"], "w": width, "h": height}
+    return views
+
+
 def check_party(party: dict[str, str], statement_ids: list[str], involved: list[str]) -> tuple[dict, list[str]]:
     """Sanity-check Wonder's statement -> vehicle suggestions against the
     geometry: two statements cannot come from one vehicle, and when we know
@@ -240,7 +250,9 @@ def match_parties(wonder, keyframes: list, closeups: list[str], statements: list
     sids = [s["id"] for s in statements]
     party = {p["statement_id"]: p["track_id"] for p in scene["party_to_track"]}
     party, notes = check_party(party, sids, involved)
-    if len(party) < len(sids) and closeups:
+    # Only a real collision narrows who the drivers can be. Elsewhere a second look
+    # limited to two vehicles would force an answer; the user assigns them instead.
+    if len(party) < len(sids) and closeups and not near_miss:
         closeup_imgs = keyframes[len(keyframes) - len(closeups):]
         focused = wonder.describe_scene(closeup_imgs, statements, involved, involved=involved,
                                         n_closeups=len(closeup_imgs), near_miss=near_miss)
@@ -438,7 +450,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         concepts = list(config.SAM_CONCEPTS) + (["wheel"] if contact_mode == "wheels" else [])
         progress("tracking", {"concepts": concepts})
         tracks = asyncio.run(sam.track_video(video, concepts))
-    progress("tracking", {"tracks": [t["id"] for t in tracks if t["concept"] != "wheel"]})
+    progress("tracking", {"tracks": [t["id"] for t in tracks if t["concept"] != "wheel"],
+                          "views": _track_views(tracks, info.width, info.height)})
     contact_report: dict = {}
     if contact_mode == "wheels":
         tracks, contact_report = contact_mod.wheel_contacts(tracks, calib.H)
@@ -465,7 +478,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     results = measure(movers, calib, clk, mc)
     progress("physics", {"measured_tracks": list(results)})
 
-    impacts = events.detect_impacts(results, tracks)
+    impacts = events.detect_impacts(results, tracks, H=calib.H)
     if impacts and refine:
         assert clk_ticks is not None  # as above
         # After contact, motion is violent and no longer smooth, so it would read
@@ -477,9 +490,11 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         progress("clock", {"method": clk.method, "refit": "pre-impact motion only",
                            "dropped_frames_inferred": clk.to_json().get("dropped_frames_inferred")})
         results = measure(movers, calib, clk, mc)
-        impacts = events.detect_impacts(results, tracks) or impacts
+        impacts = events.detect_impacts(results, tracks, H=calib.H) or impacts
+    for e in impacts:  # the moment cannot be known better than the clock at that frame
+        e["t_sigma"] = max(e["t_sigma"], round(float(clk.sigma[e["i"]]), 3))
     impact = impacts[0] if impacts else None
-    closest = None if impact else events.closest_approach(results, tracks)
+    closest = None if impact else events.closest_approach(results, tracks, H=calib.H, frame_size=(info.width, info.height))
     braking, momentum, speeds = {}, None, {}
     if impact:
         results = split_at_impact(results, movers, calib, clk, mc, impact, post_tracks=movers_all)
@@ -530,6 +545,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
     checked = []
     ctx = {"impact_t": impact["t"] if impact else None, "closest_t": closest["t"] if closest else None,
+           "moment_tracks": list((impact or closest)["tracks"]) if impact or closest else [],
            "signal_changes": main_light,
             "stop_line": cal_in.get("stop_line_m"), "braking": braking, "signal_note": signal_note}
     if inp.get("claims_override"):  # testing: claims written by hand, no model call

@@ -169,6 +169,28 @@ export interface ProcessingModalProps {
 
 type Source = 'idle' | 'live' | 'recorded';
 
+interface TrackView { i: number; box: [number, number, number, number]; w: number; h: number }
+
+/** Signals are read separately; only road users can have a driver. */
+const roadUsers = (ids: string[]) => ids.filter((t) => !t.startsWith('traffic'));
+
+/** The chosen track's largest view, cropped from its frame. */
+const TrackThumb: React.FC<{ caseId: string; view: TrackView }> = ({ caseId, view }) => {
+  const [x1, y1, x2, y2] = view.box;
+  const scale = Math.min(72 / Math.max(x2 - x1, 1), 48 / Math.max(y2 - y1, 1));
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-12 w-[72px] shrink-0 rounded border border-line bg-no-repeat"
+      style={{
+        backgroundImage: `url(/cases/${caseId}/frame/${view.i}.jpg)`,
+        backgroundSize: `${view.w * scale}px ${view.h * scale}px`,
+        backgroundPosition: `${-x1 * scale}px ${-y1 * scale}px`,
+      }}
+    />
+  );
+};
+
 export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClose, caseId, recorded, autoStart = false, onComplete }) => {
   const [statuses, setStatuses] = useState<Record<string, StageStatus>>({});
   const [data, setData] = useState<StageData>({});
@@ -179,6 +201,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
   const [awaitingParty, setAwaitingParty] = useState(false);
   const [partyMapping, setPartyMapping] = useState<Record<string, string>>({});
   const [suggested, setSuggested] = useState<Suggestion[]>([]);
+  const [trackViews, setTrackViews] = useState<Record<string, TrackView>>({});
   const [tracks, setTracks] = useState<string[]>([]);
   const [statements, setStatements] = useState<Array<{ id: string; speaker: string }>>([]);
   const [result, setResult] = useState<CaseData | null>(null);
@@ -268,6 +291,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
         return next;
       });
       if (stageId === 'tracking' && Array.isArray(payload.tracks)) setTracks(payload.tracks as string[]);
+      if (stageId === 'tracking' && payload.views) setTrackViews(payload.views as Record<string, TrackView>);
       if (stageId === 'statements' && Array.isArray(payload.items)) setStatements(payload.items as { id: string; speaker: string }[]);
       if (stageId === 'scene' && Array.isArray(payload.suggested)) {
         const list = payload.suggested as Suggestion[];
@@ -344,11 +368,13 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
       resumeReplay.current?.();
       return;
     }
-    const changed = suggested.some((s) => partyMapping[s.statement_id] !== s.track_id);
+    // Unmatched statements count too: assigning one is a change like any other.
+    const assigned = Object.fromEntries(Object.entries(partyMapping).filter(([, t]) => t !== 'unassigned'));
+    const changed = statements.some((st) => (assigned[st.id] ?? null) !== (suggested.find((s) => s.statement_id === st.id)?.track_id ?? null));
     if (changed) {
-      if (isProcessing) rerunWith.current = partyMapping;
+      if (isProcessing) rerunWith.current = assigned;
       else if (caseId) {
-        await fetch(`/cases/${caseId}/party`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(partyMapping) });
+        await fetch(`/cases/${caseId}/party`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(assigned) });
         startLive();
       }
     }
@@ -454,7 +480,9 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
                 <div className="col-span-full mt-2 rounded border border-signal-amber/40 bg-asphalt-850 p-3 sm:ml-[36px]">
                   <h3 className="text-[13px] font-medium text-bone">Who drove what?</h3>
                   <p className="mt-0.5 text-[12.5px] text-bone-400">
-                    Muse Wonder’s suggestion from the keyframes. A person confirms it before any claim is checked against a vehicle.
+                    {suggested.length
+                      ? 'Muse Wonder’s suggestion from the keyframes. A person confirms it before any claim is checked against a vehicle.'
+                      : 'Muse Wonder could not tell from the keyframes. Choose each vehicle yourself; a statement left unassigned is not checked.'}
                   </p>
                   <div className="mt-2 divide-y divide-line">
                     {statements.map((st) => {
@@ -467,6 +495,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
                             {(s?.reason || s?.rationale) && <p className="mt-0.5 text-[12.5px] leading-snug text-bone-400">{s.reason || s.rationale}</p>}
                           </div>
                           <label className="flex shrink-0 items-center gap-2 text-[12px] text-bone-400">
+                            {caseId && trackViews[value] && <TrackThumb caseId={caseId} view={trackViews[value]} />}
                             Assign to
                             <select
                               value={value}
@@ -474,7 +503,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({ isOpen, onClos
                               onChange={(e) => setPartyMapping((p) => ({ ...p, [st.id]: e.target.value }))}
                               className="field measured w-auto py-1 disabled:opacity-60"
                             >
-                              {[...new Set([...tracks, value])].filter((t) => t !== 'unassigned').map((t) => <option key={t} value={t}>{t}</option>)}
+                              {[...new Set([...roadUsers(tracks), value])].filter((t) => t !== 'unassigned').map((t) => <option key={t} value={t}>{t}</option>)}
                               <option value="unassigned">Unassigned</option>
                             </select>
                           </label>

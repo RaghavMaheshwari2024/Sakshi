@@ -6,7 +6,7 @@ import itertools
 
 import numpy as np
 
-from .uncertainty import KMH, TrackResult
+from .uncertainty import KMH, TrackResult, metres_per_px
 
 MOVERS = {"car", "motorcycle", "person", "auto rickshaw", "bus", "truck", "bicycle"}
 
@@ -24,6 +24,12 @@ MASS_RANGES = {
 
 BRAKE_DECEL = -2.5  # m/s^2: firmer than coasting, softer than an emergency stop
 
+# Beyond this ground distance per image pixel, a car is only a few pixels long and
+# boxes overlap through perspective alone, so contact cannot be judged from the image.
+MAX_CONTACT_M_PER_PX = 0.3
+NEAR_MISS_MAX_GAP_M = 10.0  # about two car lengths, measured between tyre-line points
+PARALLEL_COS = float(np.cos(np.radians(30.0)))
+
 
 def _boxes_by_frame(track: dict) -> dict[int, list[float]]:
     return {f["i"]: f["box"] for f in track["frames"]}
@@ -31,6 +37,20 @@ def _boxes_by_frame(track: dict) -> dict[int, list[float]]:
 
 def _intersect(a, b) -> bool:
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def _resolved(H: np.ndarray | None, *boxes) -> bool:
+    """Is the image sharp enough on the road at these boxes to judge contact?"""
+    if H is None:
+        return True
+    return all(float(metres_per_px(H, np.array([[(b[0] + b[2]) / 2, b[3]]], float))[0]) <= MAX_CONTACT_M_PER_PX
+               for b in boxes)
+
+
+def _clipped(box, frame_size: tuple[int, int], margin_px: float = 2.0) -> bool:
+    """A box cut by the frame edge: its bottom centre is not the vehicle's."""
+    w, h = frame_size
+    return box[0] <= margin_px or box[1] <= margin_px or box[2] >= w - margin_px or box[3] >= h - margin_px
 
 
 def _closing_speed(ra: TrackResult, ka: int, rb: TrackResult, kb: int) -> float:
@@ -67,7 +87,7 @@ def motion_changed(ra: TrackResult, rb: TrackResult, t: float, before=(0.6, 0.15
 
 def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
                    max_gap_m: float = 4.5, min_closing_ms: float = 1.0,
-                   lookback_s: float = 0.6) -> list[dict]:
+                   lookback_s: float = 0.6, H: np.ndarray | None = None) -> list[dict]:
     """First frame where two road users' boxes touch in the image, their ground
     positions are within `max_gap_m`, AND they were closing on each other at
     `min_closing_ms` or more in the `lookback_s` before. The closing test rejects
@@ -92,7 +112,7 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
             kb = int(np.searchsorted(rb.frames, i))
             closing[int(i)] = (_closing_speed(ra, ka, rb, kb), float(ra.nominal.t[ka]))
         for i in common:
-            if i not in ba or i not in bb or not _intersect(ba[i], bb[i]):
+            if i not in ba or i not in bb or not _intersect(ba[i], bb[i]) or not _resolved(H, ba[i], bb[i]):
                 continue
             ka = int(np.searchsorted(ra.frames, i))
             kb = int(np.searchsorted(rb.frames, i))
@@ -114,21 +134,39 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
     return sorted(impacts, key=lambda e: e["t"])
 
 
-def closest_approach(results: dict[str, TrackResult], tracks: list[dict]) -> dict | None:
-    """When no impact is found (a near miss): the moment two road users came
-    closest on the ground. Speed claims are then checked around that moment."""
+def _paths_cross(va: np.ndarray, vb: np.ndarray) -> bool:
+    """Both moving, on directions at least 30 degrees from parallel. Lanes running
+    side by side bring vehicles close all day; that alone is not a near miss."""
+    na, nb = float(np.linalg.norm(va)), float(np.linalg.norm(vb))
+    return na >= 1.0 and nb >= 1.0 and abs(float(va @ vb)) / (na * nb) <= PARALLEL_COS
+
+
+def closest_approach(results: dict[str, TrackResult], tracks: list[dict],
+                     H: np.ndarray | None = None, frame_size: tuple[int, int] | None = None) -> dict | None:
+    """When no impact is found (a near miss): the moment two road users on crossing
+    paths came closest on the ground, where the image can show it. Speed claims are
+    then checked around that moment. None if nothing qualifies: most footage holds
+    no near miss. Head-on and rear-end near misses are parallel, so not found here."""
     by_id = {t["id"]: t for t in tracks}
     ids = [i for i in results if by_id[i]["concept"] in MOVERS]
     best = None
     for a, b in itertools.combinations(ids, 2):
         ra, rb = results[a], results[b]
+        ba, bb = _boxes_by_frame(by_id[a]), _boxes_by_frame(by_id[b])
         common = np.intersect1d(ra.frames, rb.frames)
         for i in common:
             ka, kb = int(np.searchsorted(ra.frames, i)), int(np.searchsorted(rb.frames, i))
             gap = float(np.linalg.norm(ra.nominal.pos[ka] - rb.nominal.pos[kb]))
-            if best is None or gap < best["gap_m"]:
-                best = {"type": "closest_approach", "tracks": [a, b], "i": int(i),
-                        "t": round(float(ra.nominal.t[ka]), 3), "gap_m": round(gap, 2)}
+            if gap > NEAR_MISS_MAX_GAP_M or (best is not None and gap >= best["gap_m"]):
+                continue
+            if H is not None and (i not in ba or i not in bb or not _resolved(H, ba[i], bb[i])):
+                continue
+            if frame_size and (i not in ba or i not in bb or _clipped(ba[i], frame_size) or _clipped(bb[i], frame_size)):
+                continue
+            if H is not None and not _paths_cross(ra.nominal.vel[ka], rb.nominal.vel[kb]):
+                continue
+            best = {"type": "closest_approach", "tracks": [a, b], "i": int(i),
+                    "t": round(float(ra.nominal.t[ka]), 3), "gap_m": round(gap, 2)}
     return best
 
 
@@ -139,8 +177,21 @@ def window_speed(res: TrackResult, t0: float, t1: float) -> dict | None:
         return None
     per_sample = res.speed_samples[:, m].mean(1)
     lo, med, hi = np.percentile(per_sample, [5, 50, 95])
-    return {"t0": round(t0, 3), "t1": round(t1, 3), "kmh": round(float(med), 1),
+    t = res.nominal.t[m]  # the time actually measured, which a clip's start or end may cut short
+    return {"t0": round(float(t[0]), 3), "t1": round(float(t[-1]), 3), "kmh": round(float(med), 1),
             "lo90": round(float(lo), 1), "hi90": round(float(hi), 1)}
+
+
+def clearest_second(res: TrackResult, length_s: float = 1.0) -> dict | None:
+    """The stretch of a track measured most tightly: the fair window for a speed
+    claim tied to no event in the clip ("when I crossed")."""
+    t = res.nominal.t
+    best = None
+    for t0 in t[t <= t[-1] - length_s + 1e-6]:
+        w = window_speed(res, float(t0), float(t0) + length_s)
+        if w and (best is None or w["hi90"] - w["lo90"] < best["hi90"] - best["lo90"]):
+            best = w
+    return best
 
 
 MIN_BRAKE_DROP_KMH = 3.0  # braking must leave the vehicle at least this much slower

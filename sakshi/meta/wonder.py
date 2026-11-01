@@ -345,7 +345,9 @@ def limitation_lines(facts: dict) -> list[str]:
             if ca else "."))
     else:
         status = (facts.get("momentum_check") or {}).get("status")
-        if status and status != "consistent":
+        if status == "insufficient_data":
+            out.append("The momentum check could not be run: too little motion was measured around the impact.")
+        elif status and status != "consistent":
             out.append("The momentum check after the impact did not balance (" + status + "): after contact "
                        "the vehicles overlap in the image, so post-impact motion is not reliable. Speeds "
                        "before the impact are measured separately and are not affected.")

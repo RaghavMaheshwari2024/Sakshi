@@ -64,7 +64,7 @@ class TrackResult:
         }
 
 
-def _metres_per_px(H: np.ndarray, p: np.ndarray) -> np.ndarray:
+def metres_per_px(H: np.ndarray, p: np.ndarray) -> np.ndarray:
     """Local scale of the image->ground map at each pixel (vertical direction,
     the worst case for an elevated camera)."""
     a = hg.img_to_ground(H, p)
@@ -102,7 +102,7 @@ def _run_once(H, frames, px, t, jitter_px, rng=None, bias_px: float | np.ndarray
     z = np.full_like(p, np.nan)
     z[ok] = hg.img_to_ground(H, p[ok])
     r = np.full(len(p), 0.25)
-    r[ok] = np.maximum(jitter_px * _metres_per_px(H, p[ok]), 0.03)
+    r[ok] = np.maximum(jitter_px * metres_per_px(H, p[ok]), 0.03)
     return smooth(t, z, meas_sigma_m=r, jerk_q=jerk_q)
 
 
@@ -124,7 +124,7 @@ def step_displacements(tracks: list[dict], calib: hg.Calibration, n: int, jitter
                 pp = np.array([pts[i - 1], pts[i]])
                 a, b = hg.img_to_ground(calib.H, pp)
                 d[i] = float(np.linalg.norm(b - a))
-                e[i] = float(np.sqrt(2) * jitter_px * _metres_per_px(calib.H, pp).mean())
+                e[i] = float(np.sqrt(2) * jitter_px * metres_per_px(calib.H, pp).mean())
         out[tr["id"]], sig[tr["id"]] = d, e
     return out, sig
 
