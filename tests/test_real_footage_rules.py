@@ -196,3 +196,14 @@ def test_a_run_given_recorded_tracks_calls_no_model(tmp_path, monkeypatch):
         {"id": "s2", "speaker": "Witness", "audio": "audio/s2.m4a"}])
     case = run(tmp_path, progress=lambda *_: None, tracks_override=tracks, mc=MCConfig(n=2))
     assert case["claims"] == []
+
+
+def test_report_says_when_a_person_assigned_the_drivers():
+    base = {"clock_method": "container_pts_even", "impact": {"t": 1}, "signal_changes": [1]}
+    assert "A person assigned" in " ".join(limitation_lines({**base, "party_assigned_by_person": True}))
+    assert "A person assigned" not in " ".join(limitation_lines(base))
+
+
+def test_clock_wording_does_not_claim_the_video_has_no_clock():
+    text = limitation_lines({"clock_method": "container_pts_even", "impact": {"t": 1}, "signal_changes": [1]})[0]
+    assert "could be used" in text

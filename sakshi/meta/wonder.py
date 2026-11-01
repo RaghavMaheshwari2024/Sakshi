@@ -316,11 +316,11 @@ CLOCK_WORDS = {
                           "placed using the vehicles' own motion.",
     "clock_ticks": "Frame times come from the burned-in clock; where dropped frames fall within each "
                    "second is not known, which the speed intervals include.",
-    "container_pts": "Frame times come from the video file's own timestamps (no burned-in clock).",
-    "container_pts_even": "No burned-in clock and evenly spaced file timestamps: frames the recorder "
+    "container_pts": "Frame times come from the video file's own timestamps (no burned-in clock could be used).",
+    "container_pts_even": "No burned-in clock could be used, and the file's timestamps are evenly spaced: frames the recorder "
                           "dropped cannot be seen, so the speed intervals allow speeds up to about 20% "
                           "higher than the file suggests.",
-    "nominal_fps": "No burned-in clock and no usable file timestamps: frame times assume the nominal "
+    "nominal_fps": "No burned-in clock could be used and no usable file timestamps: frame times assume the nominal "
                    "frame rate, and the speed intervals allow up to about 20% dropped frames.",
 }
 
@@ -338,6 +338,8 @@ def limitation_lines(facts: dict) -> list[str]:
                    "points fit a flat road); positions assume a flat road.")
     if facts.get("calibration_basis"):
         out.append(f"Calibration basis: {facts['calibration_basis']}.")
+    if facts.get("party_assigned_by_person"):
+        out.append("A person assigned the statements to vehicles; the footage does not show who was driving.")
     if not facts.get("impact"):
         ca = facts.get("closest_approach")
         out.append("No impact found in the footage" + (

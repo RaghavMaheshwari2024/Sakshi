@@ -396,7 +396,8 @@ def choose_signal(sig: dict, chosen: str | None, tracks: list[dict] | None = Non
                       "choose which one governs the stop line")
 
 
-def _models_summary(tracks, stats, statements, scene, party, claims, report, live: bool) -> list[dict]:
+def _models_summary(tracks, stats, statements, scene, party, claims, report, live: bool,
+                    assigned_by_person: bool = False) -> list[dict]:
     """What each Meta model did in this case, for the UI's model strip and the report."""
     out = []
     if live:
@@ -415,7 +416,9 @@ def _models_summary(tracks, stats, statements, scene, party, claims, report, liv
         out.append({"model": config.VOICE_MODEL, "role": "statements", "did": f"transcribed {heard} recorded statements"})
     if scene or (claims and live) or report:
         did = []
-        if scene:
+        if scene and assigned_by_person:
+            did.append("described the scene (a person assigned the statements to vehicles)")
+        elif scene:
             did.append(f"matched {len(scene.get('party_to_track', []))} of {len(statements)} statements to road users")
         if claims and live:
             did.append(f"extracted {len(claims)} checkable claims")
@@ -577,6 +580,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         "calibration_rms_m": round(calib.rms_err_m, 3),
         "calibration_points": len(calib.image_pts),
         "calibration_basis": calib_sources.basis_text(calib),
+        "party_assigned_by_person": bool(inp.get("party_to_track")),
     }
     report = None
     if tracks_override is None and (impact or checked):
@@ -590,7 +594,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         "camera_mode": inp.get("camera_mode", "fixed"),
         "contact": {"mode": contact_mode, "per_vehicle": contact_report, "occluded_frames": occluded},
         "models": _models_summary(tracks, stats, statements, scene, party, checked, report,
-                                  live=tracks_override is None),
+                                  live=tracks_override is None, assigned_by_person=bool(inp.get("party_to_track"))),
         "private_mode": config.PRIVATE_MODE,
         "clip": {"file": video.name, "frames": info.n, "fps_nominal": info.fps,
                  "width": info.width, "height": info.height},

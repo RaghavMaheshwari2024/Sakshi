@@ -67,6 +67,17 @@ function chronology(data: CaseData): Row[] {
       value: `at (${imp.xy[0].toFixed(1)}, ${imp.xy[1].toFixed(1)}) m, ±${imp.t_sigma.toFixed(3)} s`, strong: true,
     });
   }
+  const listed = rows.map((r) => `${r.subject}@${r.t}`);
+  for (const c of data.claims || []) {
+    const m = c.measured;
+    if (typeof m?.kmh === 'number' && !listed.includes(`${c.subject_track}@${m.t0}`)) {
+      listed.push(`${c.subject_track}@${m.t0}`);
+      rows.push({
+        t: m.t0, subject: c.subject_track, event: `Speed over t = ${m.t0.toFixed(2)} to ${m.t1.toFixed(2)} s, for statement ${c.statement_id}`,
+        value: claimMeasurement(c) ?? '',
+      });
+    }
+  }
   const ca = data.facts?.closest_approach;
   if (ca) rows.push({ t: ca.t, subject: (ca.tracks || []).join(' × '), event: 'Closest approach, no impact', value: `${(ca.gap_m as number)?.toFixed(2)} m apart`, strong: true });
   return rows.sort((a, b) => a.t - b.t);
@@ -116,7 +127,9 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
   const impact = caseData.facts?.impact ?? null;
   const momentum = caseData.facts?.momentum_check;
   const calibration = caseData.calibration;
-  const ids = measuredTracks(caseData);
+  const closest = caseData.facts?.closest_approach ?? null;
+  // The vehicles this report is about: those in the event, else those in the statements.
+  const tileIds = (impact?.tracks ?? closest?.tracks ?? [...new Set(caseData.claims.filter((c) => typeof c.measured?.kmh === 'number').map((c) => c.subject_track))]).slice(0, 2);
   const refId = `${(caseData.clip.file || 'case').replace(/\W/g, '').slice(0, 10).toUpperCase()}-${caseData.clip.frames}`;
 
   return (
@@ -164,14 +177,14 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
           <p className="text-[14px] leading-relaxed">{report?.summary || fallbackSummary(caseData)}</p>
           <dl className="mt-4 grid grid-cols-2 gap-px border border-[#16161422] bg-[#16161422] sm:grid-cols-4">
             <div className="bg-[#faf8f3] p-3 print:bg-white">
-              <dt className="text-[12px] text-[#77756e]">{impact ? 'Impact' : 'Closest approach'}</dt>
+              <dt className="text-[12px] text-[#77756e]">{impact ? 'Impact' : closest ? 'Closest approach' : 'Impact or near miss'}</dt>
               <dd className="mt-1 font-mono text-[17px] text-[#161614]">
-                {impact ? `${impact.t.toFixed(3)} s` : caseData.facts?.closest_approach ? `${caseData.facts.closest_approach.t.toFixed(3)} s` : 'None'}
+                {impact ? `${impact.t.toFixed(3)} s` : closest ? `${closest.t.toFixed(3)} s` : 'None found'}
               </dd>
               {impact && <dd className="font-mono text-[11.5px] text-[#77756e]">±{impact.t_sigma.toFixed(3)} s</dd>}
             </div>
-            {(impact?.tracks ?? caseData.facts?.closest_approach?.tracks ?? ids.slice(0, 2)).slice(0, 2).map((id) => {
-              const sp = speedBeforeImpact(caseData, id);
+            {tileIds.map((id) => {
+              const sp = speedBeforeImpact(caseData, id) ?? caseData.claims.find((c) => c.subject_track === id && typeof c.measured?.kmh === 'number')?.measured;
               return (
                 <div key={id} className="bg-[#faf8f3] p-3 print:bg-white">
                   <dt className="text-[12px] capitalize text-[#77756e]">{vehicleName(caseData, id)}</dt>
@@ -191,6 +204,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
         </Section>
 
         <Section n={2} title="Chronology">
+          {rows.length === 0 ? <p className="text-[14px]">No events or checked speeds to list for this case.</p> : (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left text-[13px]">
               <thead>
@@ -213,6 +227,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
               </tbody>
             </table>
           </div>
+          )}
         </Section>
 
         <Section n={3} title="Statements against the measurements">
