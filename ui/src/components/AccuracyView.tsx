@@ -19,6 +19,58 @@ interface AccuracyViewProps {
   onOpenCase?: () => void;
 }
 
+interface CoverageRow { frames: number; mae_kmh: number; coverage_pct: number; median_span_kmh: number }
+interface CalibrationCoverage { scenarios: number; note: string; results: Record<string, CoverageRow> }
+
+const COVERAGE_ROWS: [string, string][] = [
+  ['surveyed', 'Surveyed road points'],
+  ['satellite', 'Satellite map, 6 points'],
+  ['two_lanes_long', 'Two-lane road + 12 m stretch'],
+  ['lane_stop_line', 'Lane + stop-line distance'],
+  ['lane_zebra', 'Lane + zebra crossing'],
+];
+
+/** Scores with the road's true size off by 0, 1 and 2 sigma from what the preset assumes. */
+const CalibrationCoverageTable: React.FC = () => {
+  const [data, setData] = useState<CalibrationCoverage | null>(null);
+  useEffect(() => {
+    fetch('/scenarios/calibration_coverage.json').then((r) => (r.ok ? r.json() : null)).then(setData).catch(() => setData(null));
+  }, []);
+  if (!data) return null;
+  const rows = COVERAGE_ROWS.flatMap(([key, label]) => {
+    const plain = data.results[key];
+    if (plain) return [{ label, row: plain }];
+    return [0, 1, 2].filter((z) => data.results[`${key}/${z}sigma`]).map((z) => ({
+      label: `${label}${z ? `, true size off by ${z}σ` : ', true size as assumed'}`,
+      row: data.results[`${key}/${z}sigma`],
+    }));
+  });
+  return (
+    <section className="mt-16">
+      <SectionHead title="Without a survey">
+        What a user gets from road markings or a satellite map, replayed on {data.scenarios} CARLA scenarios against true speeds. {data.note} A small rectangle stays honest only by giving a very wide interval.
+      </SectionHead>
+      <div data-reveal className="mt-5 overflow-x-auto">
+        <table className="w-full min-w-[560px] text-left text-[13.5px]">
+          <thead className="border-b border-line text-bone-400">
+            <tr><th className="py-2 pr-4 font-normal">How the road was sized</th><th className="py-2 pr-4 font-normal">Mean error</th><th className="py-2 pr-4 font-normal">Interval width</th><th className="py-2 font-normal">Truth inside 90% interval</th></tr>
+          </thead>
+          <tbody className="divide-y divide-line text-bone-200">
+            {rows.map(({ label, row }) => (
+              <tr key={label}>
+                <td className="py-2 pr-4 text-bone">{label}</td>
+                <td className="measured py-2 pr-4">{row.mae_kmh} km/h</td>
+                <td className="measured py-2 pr-4">{row.median_span_kmh} km/h</td>
+                <td className={`measured py-2 ${row.coverage_pct < 85 ? 'text-signal-amber' : ''}`}>{row.coverage_pct}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+};
+
 const SectionHead: React.FC<{ title: string; children?: React.ReactNode }> = ({ title, children }) => (
   <div data-reveal className="max-w-2xl">
     <h2 className="font-serif text-[26px] font-light leading-tight text-bone">{title}</h2>
@@ -439,6 +491,8 @@ export const AccuracyView: React.FC<AccuracyViewProps> = ({ onBack, onOpenCase }
           </table>
         </div>
       </section>
+
+      <CalibrationCoverageTable />
 
       <section className="mt-16">
         <SectionHead title="What still falls short" />

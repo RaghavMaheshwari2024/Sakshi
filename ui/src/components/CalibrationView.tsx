@@ -16,6 +16,9 @@ import {
 } from 'lucide-react';
 import { CalibrationInfo, ClipInfo } from '../types/case';
 import { Button, Notice, Segmented } from './ui';
+import { CalibMethod, CalibrationMethodPanel, RectSize } from './CalibrationMethodPanel';
+import { ROAD_PRESETS } from '../content/calibrationPresets';
+import { geoToLocalM } from '../utils/geo';
 
 export interface PointPair {
   id: string;
@@ -24,6 +27,12 @@ export interface PointPair {
   x: number;
   y: number;
   errM?: number;
+  /** Clicked on the frame, but its ground position is not known yet. */
+  pending?: boolean;
+  lat?: number;
+  lng?: number;
+  /** Map zoom it was picked at; null when coordinates were pasted. */
+  zoom?: number | null;
 }
 
 export interface CalibrationViewProps {
@@ -42,6 +51,10 @@ export interface CalibrationViewProps {
 type ActiveTool = 'points' | 'stopline' | 'clock' | 'signal';
 
 // Synthetic ground truth defaults for immediate testing & resets
+const rectCorners = (r: RectSize): [number, number][] => [[0, 0], [r.width_m, 0], [r.width_m, r.length_m], [0, r.length_m]];
+
+const firstPreset = ROAD_PRESETS[0];
+
 const DEFAULT_POINTS: PointPair[] = [
   { id: 'P1', u: 234.8, v: 509.1, x: -15.0, y: -3.5 },
   { id: 'P2', u: 158.8, v: 426.3, x: -15.0, y: 3.5 },
@@ -65,18 +78,36 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
   const [activeCameraMode, setActiveCameraMode] = useState<'fixed' | 'dashcam'>(cameraMode);
   const [activeTool, setActiveTool] = useState<ActiveTool>('points');
 
+  // Where the ground coordinates come from. Never chosen for the user: a saved
+  // case opens on the method it was saved with, and a method only takes over
+  // when the user starts clicking for it.
+  const [method, setMethod] = useState<CalibMethod>(initialCalibration?.method ?? (caseId && !initialCalibration ? 'preset' : 'manual'));
+  const [rect, setRect] = useState<RectSize>(() => {
+    const m = initialCalibration?.ground_model;
+    return m?.kind === 'rect'
+      ? { id: initialCalibration?.source?.preset_id ?? 'custom', width_m: m.width_m!, length_m: m.length_m!, sigma_width_m: m.sigma_width_m!, sigma_length_m: m.sigma_length_m! }
+      : { id: firstPreset.id, width_m: firstPreset.width_m, length_m: firstPreset.length_m, sigma_width_m: firstPreset.sigma_width_m, sigma_length_m: firstPreset.sigma_length_m };
+  });
+  const typedPoints = useRef<PointPair[] | null>(null);
+  const stopLinePx = useRef<[number, number][] | null>(null);
+  const [calibWarnings, setCalibWarnings] = useState<string[]>(initialCalibration?.warnings ?? []);
+
   // Calibration entities
   const [points, setPoints] = useState<PointPair[]>(() => {
     if (initialCalibration?.image_pts && initialCalibration.ground_pts_m) {
+      const geo = initialCalibration.source?.geo_pts;
+      const zoom = initialCalibration.source?.map_zoom ?? null;
       return initialCalibration.image_pts.map((img, idx) => ({
         id: `P${idx + 1}`,
         u: Math.round(img[0] * 10) / 10,
         v: Math.round(img[1] * 10) / 10,
         x: initialCalibration.ground_pts_m[idx][0],
         y: initialCalibration.ground_pts_m[idx][1],
+        ...(geo ? { lat: geo[idx][0], lng: geo[idx][1], zoom } : {}),
       }));
     }
-    return DEFAULT_POINTS;
+    // Demo points only where nothing is saved anyway; real footage starts empty.
+    return caseId ? [] : DEFAULT_POINTS;
   });
 
   const [stopLineM, setStopLineM] = useState<[[number, number], [number, number]]>(
@@ -85,6 +116,9 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       [-8.0, 3.5],
     ]
   );
+
+  // A guess is drawn so the handles are visible, but only a placed line is saved.
+  const [stopLineSet, setStopLineSet] = useState<boolean>(Boolean(initialCalibration?.stop_line_m));
 
   // Starting guesses for a 1280 px wide frame, scaled to this clip.
   const px = (clip?.width || 1280) / 1280;
@@ -136,7 +170,8 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
   const canvasH = clip?.height || frameImage?.naturalHeight || 720;
 
   // Compute Homography Matrix & Reprojection Error using DLT Least Squares
-  const solveHomography = useCallback((pts: PointPair[]) => {
+  const solveHomography = useCallback((all: PointPair[]) => {
+    const pts = all.filter((p) => !p.pending);
     if (pts.length < 4) return;
 
     // Normal equations (A^T A) h = A^T b for least squares homography
@@ -225,7 +260,8 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     // Compute residual errors
     let sqSum = 0;
     let maxE = 0;
-    const updatedPts = pts.map((p) => {
+    const updatedPts = all.map((p) => {
+      if (p.pending) return p;
       const denom = H[2][0] * p.u + H[2][1] * p.v + H[2][2];
       const estX = (H[0][0] * p.u + H[0][1] * p.v + H[0][2]) / denom;
       const estY = (H[1][0] * p.u + H[1][1] * p.v + H[1][2]) / denom;
@@ -260,6 +296,70 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     // Only the number of points re-fits here; edits call solveHomography directly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points.length]);
+
+  const applyMethodPoints = (next: PointPair[]) => {
+    setPoints(next);
+    setCalibWarnings([]);
+    solveHomography(next);
+  };
+
+  // Replacing the ground changes its frame, so the stop line stays where it is
+  // on the image: remember it in pixels, and re-read it once the new fit exists.
+  const startMethod = (m: CalibMethod) => {
+    if (m === method && m === 'manual') return;
+    const a = groundToImage(stopLineM[0][0], stopLineM[0][1]);
+    const b = groundToImage(stopLineM[1][0], stopLineM[1][1]);
+    stopLinePx.current = a && b ? [a, b] : null;
+    if (method === 'manual') typedPoints.current = points;
+    setMethod(m);
+    setActiveTool('points');
+    setCalibWarnings([]);
+    if (m === 'manual') {
+      const restored = typedPoints.current ?? (caseId ? [] : DEFAULT_POINTS);
+      setPoints(restored);
+      solveHomography(restored);
+    } else {
+      setPoints([]);
+      setHomographyH(null);
+    }
+  };
+
+  const changeRect = (r: RectSize) => {
+    setRect(r);
+    if (method !== 'preset') return;
+    const g = rectCorners(r);
+    const next = points.map((p, i) => ({ ...p, x: g[i][0], y: g[i][1] }));
+    if (r.width_m > 0 && r.length_m > 0) applyMethodPoints(next);
+    else setPoints(next);
+  };
+
+  // Ground positions follow from the map points, in metres around their centroid.
+  const withMapGround = (all: PointPair[]): PointPair[] => {
+    const local = geoToLocalM(all.filter((p) => !p.pending).map((p) => [p.lat!, p.lng!]));
+    let i = 0;
+    return all.map((p) => {
+      if (p.pending) return p;
+      const [x, y] = local[i++];
+      return { ...p, x, y };
+    });
+  };
+
+  const handleMapPick = (lat: number, lng: number, zoom: number | null) => {
+    applyMethodPoints(withMapGround(points.map((p) => (p.pending ? { ...p, lat, lng, zoom, pending: false } : p))));
+  };
+
+  const handleMapMove = (id: string, lat: number, lng: number, zoom: number) => {
+    applyMethodPoints(withMapGround(points.map((p) => (p.id === id ? { ...p, lat, lng, zoom } : p))));
+  };
+
+  const undoMethodPoint = () => {
+    setCalibWarnings([]);
+    setHomographyH(null);
+    const next = points.slice(0, -1).map((p) => (method === 'preset' ? { ...p, pending: true } : p));
+    const ready = method === 'satellite' ? withMapGround(next) : next;
+    setPoints(ready);
+    solveHomography(ready);
+  };
 
   const imageToGround = (u: number, v: number): [number, number] | null => {
     if (!homographyH) return null;
@@ -595,6 +695,21 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     canvasH,
   ]);
 
+  useEffect(() => {
+    if (!homographyH) return;
+    if (!stopLineSet) {
+      const [a, b] = points.filter((p) => !p.pending);
+      if (a && b) setStopLineM([[a.x, a.y], [b.x, b.y]]);
+      return;
+    }
+    if (!stopLinePx.current) return;
+    const [a, b] = stopLinePx.current.map(([u, v]) => imageToGround(u, v));
+    stopLinePx.current = null;
+    if (a && b) setStopLineM([[Math.round(a[0] * 10) / 10, Math.round(a[1] * 10) / 10], [Math.round(b[0] * 10) / 10, Math.round(b[1] * 10) / 10]]);
+    // Runs when a new fit appears; imageToGround reads that same fit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [homographyH]);
+
   // Canvas Mouse Interaction Handlers
   const getCanvasCoords = (e: React.PointerEvent<HTMLCanvasElement>): [number, number] => {
     const canvas = canvasRef.current;
@@ -614,6 +729,23 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       if (clicked) {
         setDraggingPointId(clicked.id);
         setSelectedPointId(clicked.id);
+        return;
+      }
+      if (method === 'preset') {
+        if (points.length >= 4) return;
+        const g = rectCorners(rect)[points.length];
+        const added: PointPair = { id: `P${points.length + 1}`, u: Math.round(u * 10) / 10, v: Math.round(v * 10) / 10, x: g[0], y: g[1], pending: true };
+        const next = [...points, added];
+        const done = next.length === 4 ? next.map((p) => ({ ...p, pending: false })) : next;
+        setPoints(done);
+        setSelectedPointId(added.id);
+        return; // the fit follows from the point count changing
+      }
+      if (method === 'satellite') {
+        if (points.some((p) => p.pending)) return; // this point still needs its place on the map
+        const added: PointPair = { id: `P${points.length + 1}`, u: Math.round(u * 10) / 10, v: Math.round(v * 10) / 10, x: 0, y: 0, pending: true };
+        setPoints([...points, added]);
+        setSelectedPointId(added.id);
         return;
       }
       // A new point starts where the current fit puts it, so it cannot wreck the
@@ -664,6 +796,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
         )
       );
     } else if (draggingStopLineIdx !== null && homographyH) {
+      setStopLineSet(true);
       // Map image coordinate to ground coordinate using H
       const denom = homographyH[2][0] * u + homographyH[2][1] * v + homographyH[2][2];
       const gX = (homographyH[0][0] * u + homographyH[0][1] * v + homographyH[0][2]) / denom;
@@ -718,7 +851,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
   };
 
   // Preset Helper
-  const loadPreset = (preset: 'synthetic' | 'lane' | 'square') => {
+  const loadPreset = (preset: 'synthetic') => {
     if (preset === 'synthetic') {
       setPoints(DEFAULT_POINTS);
       setStopLineM([
@@ -728,27 +861,36 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       setClockBoxPx([15, 10, 420, 52]);
       setSignalLightPx([950, 220]);
       solveHomography(DEFAULT_POINTS);
-    } else if (preset === 'lane') {
-      const lanePoints: PointPair[] = [
-        { id: 'P1', u: 234.8, v: 509.1, x: -10.0, y: -3.5 },
-        { id: 'P2', u: 158.8, v: 426.3, x: -10.0, y: 0.0 },
-        { id: 'P3', u: 887.7, v: 332.5, x: 10.0, y: -3.5 },
-        { id: 'P4', u: 760.0, v: 306.7, x: 10.0, y: 0.0 },
-      ];
-      setPoints(lanePoints);
-      solveHomography(lanePoints);
     }
   };
 
   // Save Calibration handler
   const handleSaveCalibration = async () => {
+    if (points.length < 4 || points.some((p) => p.pending)) {
+      setSaveStatus('error');
+      setSaveError(method === 'preset' ? 'Click all 4 corners first.' : method === 'satellite' ? 'Match at least 4 points on the frame and the map first.' : 'At least 4 points are needed.');
+      return false;
+    }
     setIsSaving(true);
     setSaveStatus('idle');
 
+    const zooms = points.map((p) => p.zoom ?? null);
+    const groundSource =
+      method === 'preset'
+        ? { method, preset: rect }
+        : method === 'satellite'
+          ? {
+              method,
+              geo_pts: points.map((p) => [p.lat, p.lng]),
+              // The coarsest view any point was picked at; unknown if any was pasted.
+              map_zoom: zooms.includes(null) ? null : Math.min(...(zooms as number[])),
+            }
+          : { method, ground_pts_m: points.map((p) => [p.x, p.y]) };
+
     const payload = {
       image_pts: points.map((p) => [p.u, p.v]),
-      ground_pts_m: points.map((p) => [p.x, p.y]),
-      stop_line_m: stopLineM,
+      ...groundSource,
+      stop_line_m: stopLineSet ? stopLineM : null,
       clock_box_px: clockBoxPx,
       signal_light_px: signalLightPx,
       camera_mode: activeCameraMode,
@@ -779,6 +921,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
         const fit = await res.json();
         setReprojRmsM(fit.reproj_rms_m);
         setReprojMaxM(fit.reproj_max_m);
+        setCalibWarnings(fit.warnings ?? []);
       }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
@@ -852,42 +995,53 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
           {/* Floating Instructions HUD */}
           <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1.5 rounded-[3px] bg-asphalt-950/85 px-2 py-1 text-[12px] text-bone-200">
             <span>
-              {activeTool === 'points' && 'Click to add a point. Drag a pin to move it.'}
+              {activeTool === 'points' && method === 'manual' && 'Click to add a point. Drag a pin to move it.'}
+              {activeTool === 'points' && method === 'preset' && (points.length < 4 ? `Click corner ${points.length + 1} of 4.` : 'Drag a corner to refine it.')}
+              {activeTool === 'points' && method === 'satellite' && (points.some((p) => p.pending) ? 'Now click the same mark on the map.' : 'Click a road mark, then the same mark on the map.')}
               {activeTool === 'stopline' && 'Drag the ends of the stop line.'}
               {activeTool === 'clock' && 'Drag a box over the burned-in clock.'}
               {activeTool === 'signal' && 'Click the traffic light that governs the stop line.'}
             </span>
           </div>
 
-          <div className={`measured pointer-events-none absolute bottom-2 left-2 rounded-[3px] bg-asphalt-950/85 px-2 py-1 text-[12px] ${reprojRmsM < 0.15 ? 'text-signal-green' : 'text-signal-amber'}`}>
-            RMS {reprojRmsM.toFixed(3)} m
-          </div>
+          {points.filter((p) => !p.pending).length > 4 && (
+            <div className={`measured pointer-events-none absolute bottom-2 left-2 rounded-[3px] bg-asphalt-950/85 px-2 py-1 text-[12px] ${reprojRmsM < 0.15 ? 'text-signal-green' : 'text-signal-amber'}`}>
+              RMS {reprojRmsM.toFixed(3)} m
+            </div>
+          )}
         </div>
 
         {/* Right: Calibration Controls & Point Pair Table */}
         <div className="flex w-full flex-col overflow-y-auto bg-asphalt-900 lg:w-[440px]">
+          {activeCameraMode === 'fixed' && (
+            <CalibrationMethodPanel
+              method={method}
+              points={points}
+              rect={rect}
+              onRectChange={changeRect}
+              onStart={startMethod}
+              onUndo={undoMethodPoint}
+              onMapPick={handleMapPick}
+              onMapMove={handleMapMove}
+            />
+          )}
+
           {/* Live Metrics Header Card */}
           <div className="p-4 border-b border-line  space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-[12.5px]  text-bone-400">
                 Fit quality
               </span>
-              <div className="flex items-center space-x-1.5">
-                <button
-                  onClick={() => loadPreset('synthetic')}
-                  className="px-2 py-0.5 rounded text-[11.5px] font-mono bg-asphalt-800 hover:bg-asphalt-700 text-bone-300 border border-line-strong"
-                >
-                  Synthetic preset
-                </button>
-                <button
-                  onClick={() => loadPreset('lane')}
-                  className="px-2 py-0.5 rounded text-[11.5px] font-mono bg-asphalt-800 hover:bg-asphalt-700 text-bone-300 border border-line-strong"
-                >
-                  3.5 m lane preset
-                </button>
-              </div>
             </div>
 
+            {calibWarnings.map((w) => <Notice key={w} tone="warn">{w}</Notice>)}
+            {points.filter((p) => !p.pending).length <= 4 ? (
+              <p className="text-[12.5px] leading-relaxed text-bone-300">
+                {points.filter((p) => !p.pending).length < 4
+                  ? 'No fit yet: at least 4 points are needed.'
+                  : calibWarnings.length ? 'Fit error is hidden for exactly 4 points.' : 'No independent check: exactly 4 points always fit, so a wrong click would not show here. Compare the grid with the road.'}
+              </p>
+            ) : (
             <div className="grid grid-cols-2 gap-3">
               <div
                 className={`p-3 rounded border flex flex-col justify-between ${
@@ -927,9 +1081,11 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                 <span className="text-[11.5px] text-bone-500 mt-1">Largest single residual</span>
               </div>
             </div>
+            )}
           </div>
 
           {/* Point Pair Correspondence Table */}
+          {method === 'manual' && (
           <div className="p-4 border-b border-line space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2">
@@ -1107,13 +1263,15 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
             </div>
           </div>
 
+          )}
+
           {/* Stop Line Segment Controls */}
           <div className="p-4 border-b border-line space-y-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2">
                 <Move className="w-4 h-4 text-signal-amber" />
                 <h3 className="text-[12.5px] font-medium text-bone-200 ">
-                  Stop line ({stopLineLength}m)
+                  Stop line ({stopLineSet ? `${stopLineLength}m` : 'not placed yet'})
                 </h3>
               </div>
               <span
@@ -1137,6 +1295,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                     value={stopLineM[0][0]}
                     onChange={(e) => {
                       const val = parseFloat(e.target.value) || 0;
+                      setStopLineSet(true);
                       setStopLineM([
                         [val, stopLineM[0][1]],
                         [stopLineM[1][0], stopLineM[1][1]],
@@ -1150,6 +1309,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                     value={stopLineM[0][1]}
                     onChange={(e) => {
                       const val = parseFloat(e.target.value) || 0;
+                      setStopLineSet(true);
                       setStopLineM([
                         [stopLineM[0][0], val],
                         [stopLineM[1][0], stopLineM[1][1]],
@@ -1169,6 +1329,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                     value={stopLineM[1][0]}
                     onChange={(e) => {
                       const val = parseFloat(e.target.value) || 0;
+                      setStopLineSet(true);
                       setStopLineM([
                         [stopLineM[0][0], stopLineM[0][1]],
                         [val, stopLineM[1][1]],
@@ -1182,6 +1343,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                     value={stopLineM[1][1]}
                     onChange={(e) => {
                       const val = parseFloat(e.target.value) || 0;
+                      setStopLineSet(true);
                       setStopLineM([
                         [stopLineM[0][0], stopLineM[0][1]],
                         [stopLineM[1][0], val],
@@ -1327,7 +1489,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1">
                 {onClose && <Button variant="ghost" size="sm" icon={<ArrowLeft className="h-3.5 w-3.5" />} onClick={onClose}>Back</Button>}
-                <Button variant="ghost" size="sm" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => loadPreset('synthetic')}>Reset</Button>
+                <Button variant="ghost" size="sm" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => { setMethod('manual'); setCalibWarnings([]); loadPreset('synthetic'); }}>Reset</Button>
               </div>
               <div className="flex items-center gap-1.5">
                 <Button size="sm" busy={isSaving} disabled={!caseId && !onSave} icon={<Save className="h-3.5 w-3.5" />} onClick={handleSaveCalibration}

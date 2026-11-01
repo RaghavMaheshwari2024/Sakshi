@@ -116,7 +116,11 @@ export const WorkspaceView: React.FC<{ onOpenProcessing: () => void }> = ({ onOp
         </dl>
         <div className="ml-auto hidden items-center gap-3 text-[12px] text-bone-500 2xl:flex">
           <span className="measured">{caseData.clip.frames} frames · {caseData.clip.fps_nominal} fps · {caseData.clip.width}×{caseData.clip.height}</span>
-          <span className="measured" title="How well the clicked road points fit a flat road">calibration {caseData.calibration.reproj_rms_m.toFixed(3)} m</span>
+          {caseData.calibration.method === 'preset'
+            ? <span title={caseData.calibration.source?.label}>road size assumed</span>
+            : caseData.calibration.image_pts.length === 4
+              ? <span title="Exactly 4 points always fit, so the fit error says nothing">calibration: 4 points, no check</span>
+              : <span className="measured" title="How well the clicked road points fit a flat road">calibration {caseData.calibration.reproj_rms_m.toFixed(3)} m{caseData.calibration.method === 'satellite' ? ' · satellite' : ''}</span>}
           <span>{caseData.camera_mode === 'dashcam' ? 'Dashcam' : 'Fixed camera'}</span>
         </div>
         {!touring && (

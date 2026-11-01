@@ -324,3 +324,20 @@ signal changes), `signals`, `statements`, `party_to_track`, `scene`, `claims`,
 
 Only simulator output, our own recordings, and datasets whose terms allow this
 use. See `THIRD_PARTY_NOTICES.md`.
+
+## Calibrating without a survey
+
+Nobody handed a CCTV clip knows the road in metres, so the calibration screen offers three methods.
+All of them feed the same engine; `sakshi/engine/calib_sources.py` turns each into ground points.
+
+| Method | The user does | Uncertainty |
+|---|---|---|
+| Road markings | clicks 4 corners of a rectangle with an assumed size | the size varies as one value per Monte Carlo draw, because a wrong lane width rescales everything |
+| Satellite map | clicks the same road marks on the frame and on a map | per point, from the map zoom, and from the fit residual with 5 or more points |
+| I measured it | types ground coordinates | as before (results unchanged) |
+
+Exactly 4 points always fit, so the report and the UI never present their 0 m error as a check.
+`scripts/calibration_coverage.py` replays the CARLA suite's tracks through these methods against true
+speeds and writes the table on the Validation screen. Small rectangles stay honest only through very
+wide intervals; a long rectangle or satellite points are far more useful. These scores come from
+projecting known road positions, not from people clicking real footage or real satellite imagery.

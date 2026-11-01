@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -15,6 +15,22 @@ class Calibration:
     ground_pts: np.ndarray  # (N, 2) metres
     rms_err_m: float
     max_err_m: float
+    method: str = "manual"  # see calib_sources.py
+    ground_model: dict | None = None  # how uncertain the ground is; None: the Monte Carlo default
+    source: dict = field(default_factory=dict)
+
+    def sample_ground(self, rng: np.random.Generator, default_sigma_m: float) -> np.ndarray:
+        """One draw of where the ground points might really be."""
+        m = self.ground_model
+        if m is None:
+            return self.ground_pts + rng.normal(0, default_sigma_m, self.ground_pts.shape)
+        if m["kind"] == "points":
+            return self.ground_pts + rng.normal(0, m["sigma_m"], self.ground_pts.shape)
+        # One rectangle per draw: an error in the assumed size is shared by all corners.
+        w = float(np.clip(rng.normal(m["width_m"], m["sigma_width_m"]), m["width_m"] / 2, m["width_m"] * 1.5))
+        l = float(np.clip(rng.normal(m["length_m"], m["sigma_length_m"]), m["length_m"] / 2, m["length_m"] * 1.5))
+        rect = np.array([[0, 0], [w, 0], [w, l], [0, l]], dtype=float)
+        return rect + rng.normal(0, m["sigma_corner_m"], rect.shape)
 
     def to_json(self) -> dict:
         return {
@@ -23,6 +39,9 @@ class Calibration:
             "ground_pts_m": self.ground_pts.tolist(),
             "reproj_rms_m": self.rms_err_m,
             "reproj_max_m": self.max_err_m,
+            "method": self.method,
+            "ground_model": self.ground_model,
+            "source": self.source,
         }
 
 

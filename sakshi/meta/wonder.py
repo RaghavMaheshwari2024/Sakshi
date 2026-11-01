@@ -330,9 +330,14 @@ def limitation_lines(facts: dict) -> list[str]:
     model they were once invented: 'the evaluation was conducted by skilled and
     experienced personnel'. A forensic report must not contain that.)"""
     out = [CLOCK_WORDS.get(facts.get("clock_method"), f"Clock method: {facts.get('clock_method')}.")]
-    if facts.get("calibration_rms_m") is not None:
+    if facts.get("calibration_points") == 4:  # 4 points always fit: the error says nothing
+        out.append(f"Road calibration uses only {facts['calibration_points']} points, so its fit cannot be "
+                   "checked independently; positions assume a flat road.")
+    elif facts.get("calibration_rms_m") is not None:
         out.append(f"Road calibration error: {facts['calibration_rms_m']} m (how well the clicked road "
                    "points fit a flat road); positions assume a flat road.")
+    if facts.get("calibration_basis"):
+        out.append(f"Calibration basis: {facts['calibration_basis']}.")
     if not facts.get("impact"):
         ca = facts.get("closest_approach")
         out.append("No impact found in the footage" + (

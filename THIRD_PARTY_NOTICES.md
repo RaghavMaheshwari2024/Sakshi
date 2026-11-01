@@ -14,3 +14,5 @@
 - Python libraries: openai (Apache 2.0), numpy, scipy (BSD), opencv-python-headless
   (Apache 2.0), FastAPI (MIT), uvicorn (BSD), requests (Apache 2.0), pydantic (MIT),
   python-dotenv (BSD).
+
+- Leaflet (BSD-2-Clause): map on the calibration screen. Map tiles are fetched at run time from Esri World Imagery and OpenStreetMap (© OpenStreetMap contributors); place search uses Nominatim. Each provider's attribution and usage terms apply.

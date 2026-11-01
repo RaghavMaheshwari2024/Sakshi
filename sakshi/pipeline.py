@@ -30,6 +30,7 @@ import cv2
 import numpy as np
 
 from . import config
+from .engine import calib_sources
 from .engine import claims as claims_mod
 from .engine import contact as contact_mod
 from .engine import clock as clock_mod
@@ -417,7 +418,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     progress("video", {"frames": info.n, "fps": info.fps, "size": [info.width, info.height]})
 
     cal_in = inp["calibration"]
-    calib = homography.fit(cal_in["image_pts"], cal_in["ground_pts_m"])
+    calib = calib_sources.resolve(cal_in)
     progress("calibration", {"reproj_rms_m": round(calib.rms_err_m, 3)})
 
     stats: dict = {}
@@ -552,6 +553,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         "claims": [{k: c[k] for k in ("statement_id", "quote", "verdict", "reason", "measured")} for c in checked],
         "clock_method": clk.method,
         "calibration_rms_m": round(calib.rms_err_m, 3),
+        "calibration_points": len(calib.image_pts),
+        "calibration_basis": calib_sources.basis_text(calib),
     }
     report = None
     if tracks_override is None and (impact or checked):
@@ -572,7 +575,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         "clock": clk.to_json(),
         "calibration": calib.to_json() | {"stop_line_m": cal_in.get("stop_line_m"),
                                           # for the 3D replay's starting viewpoint
-                                          "camera": homography.camera_pose(calib.H, info.width, info.height)},
+                                          "camera": homography.camera_pose(calib.H, info.width, info.height),
+                                          "warnings": calib_sources.warnings(calib, info.width, info.height)},
         "tracks": tracks,
         "trajectories": [r.to_json() for r in results.values()],
         "events": impacts,

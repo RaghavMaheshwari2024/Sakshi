@@ -149,7 +149,7 @@ def measure(tracks: list[dict], calib: hg.Calibration, clock: FrameClock,
     samples_p = {tid: [] for tid in prepared}
     for _ in range(cfg.n):
         ip = calib.image_pts + rng.normal(0, cfg.click_sigma_px, calib.image_pts.shape)
-        gp = calib.ground_pts + rng.normal(0, cfg.ground_sigma_m, calib.ground_pts.shape)
+        gp = calib.sample_ground(rng, cfg.ground_sigma_m)
         H, _ = cv2.findHomography(ip, gp, method=0)
         if H is None or not np.isfinite(H).all() or abs(np.linalg.det(H)) < 1e-12:
             continue
