@@ -570,7 +570,9 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         "clip": {"file": video.name, "frames": info.n, "fps_nominal": info.fps,
                  "width": info.width, "height": info.height},
         "clock": clk.to_json(),
-        "calibration": calib.to_json() | {"stop_line_m": cal_in.get("stop_line_m")},
+        "calibration": calib.to_json() | {"stop_line_m": cal_in.get("stop_line_m"),
+                                          # for the 3D replay's starting viewpoint
+                                          "camera": homography.camera_pose(calib.H, info.width, info.height)},
         "tracks": tracks,
         "trajectories": [r.to_json() for r in results.values()],
         "events": impacts,
