@@ -1,17 +1,18 @@
 /**
- * The front page: what Sakshi is, for whom, and proof, in one scroll. Every
- * exhibit is drawn live from the base scenario's case.json and the exported
- * validation results; the two road-safety figures are cited at the foot.
+ * The front page: what Sakshi is, for whom, and proof, in one scroll. The opening
+ * shows a real camera frame with its real masks (public/overview, exported from a
+ * case); the other exhibits are drawn from the base scenario's case.json and the
+ * validation results. The two road-safety figures are cited at the foot.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { ActiveView } from './AppBar';
 import { ClaimLine } from './ClaimLine';
 import { Button, Mark, VerdictTag } from './ui';
-import type { CaseData } from '../types/case';
+import type { CaseData, Claim } from '../types/case';
 import { loadScenarioCase, scenarioThumbUrl } from '../utils/scenarios';
 import { Benchmark, loadBenchmark, summarise } from '../utils/benchmark';
-import { droppedPositions, strongestContradiction, vehicleName } from '../utils/caseFacts';
+import { droppedPositions, strongestContradiction } from '../utils/caseFacts';
 import { drawRleMask } from '../utils/maskDecoder';
 import { getTrackColor } from '../utils/colors';
 import { MODELS } from '../content/models';
@@ -32,6 +33,43 @@ const STEPS = [
   { id: 'speed', model: 'Engine', title: 'Measure, with honest doubt', body: 'A Kalman smoother gives speed. Monte Carlo runs over every uncertain input give a 90% interval, so no speed is ever shown bare.' },
   { id: 'verdict', model: 'Muse Wonder + Engine', title: 'Hold the statement to it', body: 'Muse Wonder extracts each checkable claim, in Hindi or English. The engine, not the model, decides whether the footage agrees.' },
 ];
+
+interface RealFrame {
+  width: number;
+  height: number;
+  crop_top: number;
+  crop_bottom: number;
+  masks: { id: string; box: [number, number, number, number]; rle?: Parameters<typeof drawRleMask>[1]; contact_px?: [number, number] | null }[];
+  claim: { quote: string; value_number: number; verdict: string; measured: { kmh: number; lo90: number; hi90: number }; subject_track: string };
+}
+
+const REAL_FRAME_URL = '/overview/real_frame.jpg';
+
+/** A real traffic camera frame with the masks SAM 3.1 returned for it. */
+const RealFrameExhibit: React.FC<{ frame: RealFrame }> = ({ frame }) => {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const shown = frame.height - frame.crop_top - frame.crop_bottom;
+  useEffect(() => {
+    const c = canvas.current;
+    const ctx = c?.getContext('2d');
+    if (!c || !ctx) return;
+    c.width = frame.width;
+    c.height = frame.height;
+    for (const m of frame.masks) {
+      const colour = getTrackColor(m.id);
+      if (m.rle) drawRleMask(ctx, m.rle, m.box, colour, 1, 1);
+      ctx.strokeStyle = colour;
+      ctx.strokeRect(m.box[0], m.box[1], m.box[2] - m.box[0], m.box[3] - m.box[1]);
+    }
+  }, [frame]);
+  return (
+    <div className="relative overflow-hidden" style={{ aspectRatio: `${frame.width} / ${shown}` }}>
+      <img src={REAL_FRAME_URL} alt="A real traffic camera frame of a London junction, with two vehicles masked" className="absolute inset-0 h-full w-full object-cover" />
+      <canvas ref={canvas} className="absolute inset-x-0 w-full" aria-hidden="true"
+              style={{ top: `${(-frame.crop_top / shown) * 100}%`, height: `${(frame.height / shown) * 100}%` }} />
+    </div>
+  );
+};
 
 /** Small label above a section. Words only: the page reads in order without numbering. */
 const Eyebrow: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -313,6 +351,7 @@ const VerdictExhibit: React.FC<{ data: CaseData; active: boolean }> = ({ data, a
 export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: ActiveView) => void }> = ({ onOpenCase, onNavigate }) => {
   const [data, setData] = useState<CaseData | null>(null);
   const [bench, setBench] = useState<Benchmark | null>(null);
+  const [realFrame, setRealFrame] = useState<RealFrame | null>(null);
   const [step, setStep] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const hero = useRef<HTMLDivElement>(null);
@@ -323,9 +362,9 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
   useEffect(() => {
     loadScenarioCase(STORY_CASE).then(setData).catch(() => setData(null));
     loadBenchmark().then(setBench);
+    fetch('/overview/real_case.json').then((r) => (r.ok ? r.json() : null)).then(setRealFrame).catch(() => setRealFrame(null));
   }, []);
 
-  const claim = useMemo(() => (data ? strongestContradiction(data) : null), [data]);
   const sum = useMemo(() => (bench ? summarise(bench) : null), [bench]);
 
   // The opening: what was said, then what was measured, then the gap.
@@ -464,8 +503,6 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
 
   useReveal(root, [Boolean(data), Boolean(sum)]);
 
-  const m = claim?.measured;
-
   return (
     <div ref={root} className="flex-1">
       {/* Opening */}
@@ -483,10 +520,6 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
         </div>
         <div className="relative mx-auto grid max-w-[1320px] items-center gap-10 px-4 py-14 sm:px-6 lg:min-h-[calc(100dvh-53px)] lg:grid-cols-[minmax(0,1.14fr)_minmax(0,1fr)] lg:gap-14 lg:py-12">
           <div>
-            <div className="hero-sub mb-5 inline-flex items-center gap-2 rounded-full border border-line-strong bg-asphalt-900/70 px-3 py-1 text-[12.5px] text-bone-200 backdrop-blur">
-              <span className="h-1.5 w-1.5 rounded-full bg-paint" aria-hidden="true" />
-              Built on Meta’s SAM 3.1 and Muse models
-            </div>
             <h1 className="hero-title display text-[clamp(44px,5.7vw,80px)]">
               People remember.<br /><span className="text-paint">Physics measures.</span>
             </h1>
@@ -501,28 +534,28 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
                 </Button>
                 <Button variant="secondary" className="h-10 px-4 text-[14px]" onClick={() => onNavigate('system')}>How it’s built</Button>
               </div>
-              <p className="mt-4 text-[13px] text-bone-400">It reports measurements for expert review. It never states who is at fault.</p>
+              <p className="mt-4 text-[13px] text-bone-400">Meta’s SAM 3.1 and Muse models read the footage; the physics engine does the measuring. Sakshi reports for expert review and never states who is at fault.</p>
             </div>
           </div>
 
           <figure className="hero-figure relative overflow-hidden rounded-lg border border-line-strong bg-asphalt-900 shadow-[0_30px_90px_-30px_rgba(242,192,55,0.28)]">
             <div className="hero-frame relative overflow-hidden">
-              {data ? <TrackExhibit data={data} /> : <div className="aspect-video animate-pulse bg-asphalt-800" />}
+              {realFrame ? <RealFrameExhibit frame={realFrame} /> : <div className="aspect-video animate-pulse bg-asphalt-800" />}
               <div className="hero-scan pointer-events-none absolute inset-x-0 top-0 h-[10%] bg-gradient-to-b from-transparent via-paint/20 to-paint/40" aria-hidden="true" />
               {['left-2 top-2 border-l border-t', 'right-2 top-2 border-r border-t', 'bottom-2 left-2 border-b border-l', 'bottom-2 right-2 border-b border-r'].map((c) => (
                 <span key={c} className={`hero-corner pointer-events-none absolute h-4 w-4 border-paint ${c}`} aria-hidden="true" />
               ))}
             </div>
             <figcaption className="hero-quote border-t border-line p-4 sm:p-5">
-              {claim && m ? (
+              {realFrame ? (
                 <>
                   <div className="flex items-start justify-between gap-3">
-                    <blockquote className="said text-[18px] leading-snug sm:text-[20px]">“{claim.quote}”</blockquote>
-                    <VerdictTag verdict={claim.verdict} className="mt-1" />
+                    <blockquote className="said text-[18px] leading-snug sm:text-[20px]">“{realFrame.claim.quote}”</blockquote>
+                    <VerdictTag verdict={realFrame.claim.verdict as Claim['verdict']} className="mt-1" />
                   </div>
-                  <ClaimLine className="mt-3" large claimed={claim.value_number!} kmh={m.kmh} lo={m.lo90} hi={m.hi90} verdict={claim.verdict} />
-                  <p className="mt-2 text-[12px] text-bone-500">
-                    {data && vehicleName(data, claim.subject_track)}, km/h, one CARLA simulated crash with degraded CCTV footage
+                  <ClaimLine className="mt-3" large claimed={realFrame.claim.value_number} kmh={realFrame.claim.measured.kmh} lo={realFrame.claim.measured.lo90} hi={realFrame.claim.measured.hi90} verdict={realFrame.claim.verdict as Claim['verdict']} />
+                  <p className="mt-2 text-[12px] leading-relaxed text-bone-500">
+                    White car, km/h. A real traffic camera in London with real SAM 3.1 masks. No crash here, and the statement was written for this demo.
                   </p>
                 </>
               ) : <div className="h-36 animate-pulse rounded bg-asphalt-800" />}
@@ -714,7 +747,7 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
               1. <a className="underline hover:text-bone" href="https://www.who.int/publications/i/item/9789240086517" target="_blank" rel="noreferrer">WHO, Global status report on road safety 2023</a>.{' '}
               2. <a className="underline hover:text-bone" href="https://morth.nic.in/sites/default/files/Road-Accident-in-India-2023-Publications.pdf" target="_blank" rel="noreferrer">MoRTH, Road Accidents in India 2023</a>.
             </p>
-            <p>Sakshi is a measurement tool. It does not determine fault or legal liability. All footage shown is simulator output.</p>
+            <p>Sakshi is a measurement tool. It does not determine fault or legal liability. Footage is simulator output unless labelled. The opening frame is from a London traffic camera, used to show the method: Powered by TfL Open Data. TfL does not endorse Sakshi.</p>
           </div>
         </footer>
       </section>
