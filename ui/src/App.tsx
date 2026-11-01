@@ -11,6 +11,7 @@ import { ProcessingModal } from './components/ProcessingModal';
 import { NewCaseModal } from './components/NewCaseModal';
 import { InvestigatorGuideModal } from './components/InvestigatorGuideModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ModelsBridge } from './components/ModelsBridge';
 import { Button, Mark, Skeleton } from './components/ui';
 import { loadScenarioIndex, openScenario, scenarioFromUrl } from './utils/scenarios';
 import { acceptBackendCase, openBackendCase } from './utils/api';
@@ -45,8 +46,17 @@ export const App: React.FC = () => {
   // A backend case with no result yet: nothing from the case on screen applies to it.
   const [uncalibrated, setUncalibrated] = useState<{ id: string; mode: 'fixed' | 'dashcam' } | null>(null);
   const viewRoot = useRef<HTMLDivElement>(null);
+  const [isBridgeOpen, setIsBridgeOpen] = useState(false);
+  const bridgePlayed = useRef(false);
+  const currentView = useRef(activeView);
 
   const setActiveView = useCallback((view: ActiveView) => {
+    // The first step from the front page into the workspace, once per page load.
+    if (currentView.current === 'overview' && view === 'case' && !bridgePlayed.current && !prefersReducedMotion()) {
+      bridgePlayed.current = true;
+      setIsBridgeOpen(true);
+    }
+    currentView.current = view;
     setActiveViewState(view);
     const u = new URL(window.location.href);
     if (view === 'overview') u.searchParams.delete('view');
@@ -57,12 +67,12 @@ export const App: React.FC = () => {
 
   // The guide greets first-time investigators when they reach the workspace.
   useEffect(() => {
-    if (activeView === 'case' && !loading && !localStorage.getItem('sakshi_guide_seen')
+    if (activeView === 'case' && !loading && !isBridgeOpen && !localStorage.getItem('sakshi_guide_seen')
       && !sessionStorage.getItem('sakshi_guide_shown')) {
       sessionStorage.setItem('sakshi_guide_shown', '1');
       setIsGuideOpen(true);
     }
-  }, [activeView, loading]);
+  }, [activeView, loading, isBridgeOpen]);
 
   // Load a case on mount: a backend case by link, else a scenario, else the mock.
   useEffect(() => {
@@ -248,6 +258,8 @@ export const App: React.FC = () => {
           calibrateCase(id, mode);
         }}
       />
+
+      {isBridgeOpen && <ModelsBridge onDone={() => setIsBridgeOpen(false)} />}
 
       <InvestigatorGuideModal isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
     </div>
