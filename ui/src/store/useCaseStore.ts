@@ -13,6 +13,8 @@ interface CaseStoreState {
   showConfidenceBands: boolean;
   replayMode: "road" | "ego";
   highlightWindow: { t0: number; t1: number; reason?: string } | null;
+  /** The pre-rendered scenario on screen (null for an uploaded / mock case). */
+  scenarioId: string | null;
 
   // Actions
   loadCase: (data: CaseData, videoUrl?: string) => void;
@@ -29,6 +31,7 @@ interface CaseStoreState {
   setShowConfidenceBands: (show: boolean) => void;
   setReplayMode: (mode: "road" | "ego") => void;
   clearHighlight: () => void;
+  setScenarioId: (id: string | null) => void;
 }
 
 export const useCaseStore = create<CaseStoreState>((set, get) => ({
@@ -43,6 +46,7 @@ export const useCaseStore = create<CaseStoreState>((set, get) => ({
   showConfidenceBands: true,
   replayMode: 'road',
   highlightWindow: null,
+  scenarioId: null,
 
   loadCase: (data, videoUrl) => {
     const t0 = data.clock?.frames?.[0]?.t ?? 0;
@@ -103,6 +107,7 @@ export const useCaseStore = create<CaseStoreState>((set, get) => ({
   setShowConfidenceBands: (show) => set({ showConfidenceBands: show }),
   setReplayMode: (mode) => set({ replayMode: mode }),
   clearHighlight: () => set({ highlightWindow: null }),
+  setScenarioId: (id) => set({ scenarioId: id }),
 }));
 
 // Dev only: lets browser tests drive the playhead.

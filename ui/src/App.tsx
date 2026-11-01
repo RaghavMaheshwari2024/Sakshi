@@ -13,6 +13,7 @@ import { ProcessingModal } from './components/ProcessingModal';
 import { NewCaseModal } from './components/NewCaseModal';
 import { InvestigatorGuideModal } from './components/InvestigatorGuideModal';
 import { Replay3D, ReplayControls } from './components/Replay3D';
+import { loadScenarioIndex, openScenario, scenarioFromUrl } from './utils/scenarios';
 import { Loader2, AlertCircle, Cpu, Eye } from 'lucide-react';
 import { CaseData } from './types/case';
 
@@ -34,7 +35,17 @@ export const App: React.FC = () => {
     const fetchCase = async () => {
       try {
         setLoading(true);
-        // Try to fetch from Vite public mock directory
+        // Pre-rendered scenarios first (?scenario=<id>, else the default one).
+        const index = await loadScenarioIndex();
+        if (index) {
+          const wanted = scenarioFromUrl();
+          const id = index.scenarios.some((x) => x.id === wanted) ? wanted! : index.default;
+          const startId = index.scenarios.some((x) => x.id === id) ? id : index.scenarios[0].id;
+          await openScenario(startId);
+          if (isMounted) setLoading(false);
+          return;
+        }
+        // Otherwise the Vite public mock directory
         const res = await fetch('/mock/case.json');
         if (!res.ok) {
           throw new Error(`Failed to load case data: HTTP ${res.status}`);

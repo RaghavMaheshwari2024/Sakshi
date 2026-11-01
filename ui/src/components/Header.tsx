@@ -1,6 +1,7 @@
 import React from 'react';
 import { ShieldAlert, Video, Eye, FileText, Camera, BarChart3, Sliders, Plus, HelpCircle } from 'lucide-react';
 import { useCaseStore } from '../store/useCaseStore';
+import { ScenarioPicker } from './ScenarioPicker';
 
 export type ActiveView = 'case' | 'report' | 'accuracy' | 'calibration';
 
@@ -48,6 +49,9 @@ export const Header: React.FC<HeaderProps> = ({
               {cameraMode === 'dashcam' ? 'DASH' : 'CCTV'}
             </span>
           </div>
+
+          {/* Pre-rendered CARLA scenarios (shown only when they were exported) */}
+          <ScenarioPicker />
         </div>
 
         {/* Center: The Dedicated View Tab Controller (Segmented & Isolated) */}
