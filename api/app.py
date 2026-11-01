@@ -33,7 +33,8 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv()  # before sakshi.config reads the environment
 
 from sakshi.config import CASES_DIR  # noqa: E402
-from sakshi.pipeline import run  # noqa: E402
+from sakshi.engine import homography, presets  # noqa: E402
+from sakshi.pipeline import recalibrate_case, run  # noqa: E402
 from sakshi.video import find_input_video, read_frames  # noqa: E402
 
 app = FastAPI(title="Sakshi")
@@ -110,13 +111,34 @@ def frame(case_id: str, i: int):
     return Response(cv2.imencode(".jpg", f)[1].tobytes(), media_type="image/jpeg")
 
 
+@app.get("/calibration/presets")
+@app.get("/api/calibration/presets")
+def get_presets():
+    """List road geometry presets with honest metric uncertainty."""
+    return presets.list_presets()
+
+
 @app.post("/cases/{case_id}/calibration")
 def calibration(case_id: str, body: dict):
-    from sakshi.engine import homography
-
     d = _case(case_id)
     try:
-        cal = homography.fit(body["image_pts"], body["ground_pts_m"])
+        preset_id = body.get("preset_id")
+        if preset_id:
+            cal = homography.fit_preset(
+                body["image_pts"],
+                preset_id=preset_id,
+                custom_w=body.get("custom_w"),
+                custom_l=body.get("custom_l"),
+            )
+        else:
+            cal = homography.fit(
+                body["image_pts"],
+                body["ground_pts_m"],
+                ground_sigma_m=float(body.get("ground_sigma_m", 0.05)),
+                mode=str(body.get("mode", "custom")),
+                preset_id=body.get("preset_id"),
+                preset_label=body.get("preset_label"),
+            )
     except (KeyError, ValueError) as exc:  # tell the UI what is wrong with the clicks
         raise HTTPException(400, f"calibration rejected: {exc}") from exc
     line = body.get("stop_line_m")
@@ -124,10 +146,50 @@ def calibration(case_id: str, body: dict):
                  ((line[0][0] - line[1][0]) ** 2 + (line[0][1] - line[1][1]) ** 2) ** 0.5 < 0.5):
         raise HTTPException(400, "stop line needs two points at least 0.5 m apart")
     inp = _inp(d)
-    inp["calibration"] = body
+    stored_cal = dict(body)
+    stored_cal["ground_pts_m"] = cal.ground_pts.tolist()
+    stored_cal["ground_sigma_m"] = cal.ground_sigma_m
+    stored_cal["mode"] = cal.mode
+    stored_cal["preset_id"] = cal.preset_id
+    stored_cal["preset_label"] = cal.preset_label
+    inp["calibration"] = stored_cal
     (d / "case_input.json").write_text(json.dumps(inp, indent=1))
+
+    if (d / "case.json").exists() and body.get("recompute"):
+        updated_case = recalibrate_case(d, stored_cal)
+        return {
+            "reproj_rms_m": cal.rms_err_m,
+            "reproj_max_m": cal.max_err_m,
+            "H": cal.H.tolist(),
+            "ground_sigma_m": cal.ground_sigma_m,
+            "mode": cal.mode,
+            "preset_id": cal.preset_id,
+            "preset_label": cal.preset_label,
+            "case": updated_case,
+        }
+
     (d / "case.json").unlink(missing_ok=True)  # inputs changed: the old result is stale
-    return {"reproj_rms_m": cal.rms_err_m, "reproj_max_m": cal.max_err_m, "H": cal.H.tolist()}
+    return {
+        "reproj_rms_m": cal.rms_err_m,
+        "reproj_max_m": cal.max_err_m,
+        "H": cal.H.tolist(),
+        "ground_sigma_m": cal.ground_sigma_m,
+        "mode": cal.mode,
+        "preset_id": cal.preset_id,
+        "preset_label": cal.preset_label,
+    }
+
+
+@app.post("/cases/{case_id}/recalibrate")
+def recalibrate_endpoint(case_id: str, body: dict):
+    d = _case(case_id)
+    if not (d / "case.json").exists():
+        raise HTTPException(400, "case has not been run yet; run pipeline first")
+    try:
+        updated_case = recalibrate_case(d, body)
+        return updated_case
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(400, f"recalibration rejected: {exc}") from exc
 
 
 @app.post("/cases/{case_id}/party")

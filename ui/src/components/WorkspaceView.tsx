@@ -8,6 +8,8 @@ import { ClaimsPanel } from './ClaimsPanel';
 import { MasterTimeline } from './MasterTimeline';
 import { CaseTour } from './CaseTour';
 import { ErrorBoundary } from './ErrorBoundary';
+import { ProvenanceBadge } from './ProvenanceBadge';
+import { ModelTheatre } from './ModelTheatre';
 import { Button, EmptyState, IconButton, Panel, Segmented, Skeleton } from './ui';
 import { loadScenarioIndex, ScenarioEntry } from '../utils/scenarios';
 import { measuredTracks, speedBeforeImpact, vehicleName } from '../utils/caseFacts';
@@ -65,6 +67,7 @@ export const WorkspaceView: React.FC<{ onOpenProcessing: () => void }> = ({ onOp
   const backendCaseId = useCaseStore((s) => s.backendCaseId);
   const [entry, setEntry] = useState<ScenarioEntry | null>(null);
   const [touring, setTouring] = useState(() => new URLSearchParams(window.location.search).has('tour'));
+  const [isTheatreOpen, setIsTheatreOpen] = useState(false);
   const grid = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -119,6 +122,10 @@ export const WorkspaceView: React.FC<{ onOpenProcessing: () => void }> = ({ onOp
           <span className="measured" title="How well the clicked road points fit a flat road">calibration {caseData.calibration.reproj_rms_m.toFixed(3)} m</span>
           <span>{caseData.camera_mode === 'dashcam' ? 'Dashcam' : 'Fixed camera'}</span>
         </div>
+        <ProvenanceBadge
+          provenance={caseData.execution_provenance}
+          onClickTheatre={() => setIsTheatreOpen(true)}
+        />
         {!touring && (
           <Button variant="secondary" size="sm" className="ml-auto 2xl:ml-0" icon={<Play className="h-3 w-3 fill-current" />} onClick={() => setTouring(true)}>
             Walk through this case
@@ -153,6 +160,12 @@ export const WorkspaceView: React.FC<{ onOpenProcessing: () => void }> = ({ onOp
           <Workflow className="h-3 w-3" /> Pipeline run
         </button>
       </div>
+
+      <ModelTheatre
+        isOpen={isTheatreOpen}
+        onClose={() => setIsTheatreOpen(false)}
+        caseData={caseData}
+      />
     </div>
   );
 };

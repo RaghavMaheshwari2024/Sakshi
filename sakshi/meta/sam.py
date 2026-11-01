@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
-from collections.abc import AsyncGenerator, AsyncIterable
+import time
+from collections.abc import AsyncGenerator, AsyncIterable, Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any
@@ -98,15 +99,31 @@ async def upload_video(path: Path) -> str:
 
 
 # --- One concept ----------------------------------------------------------
-async def segment_concept(video: Path, concept: str) -> VideoSegmentationResult:
+async def segment_concept(video: Path, concept: str,
+                          on_theatre_event: Callable[[dict], None] | None = None) -> VideoSegmentationResult:
     """Track every instance of `concept` through the video (one request)."""
+    t0 = time.time()
     sha = cache.file_sha(video)
     metadata = {"include_confidence": "true", "mask_encoding": "one_bit"}
     key = cache.key_for(sha, config.SAM_MODEL, concept, metadata)
-    rows = cache.get_jsonl("sam_stream", key)
+    rows, meta = cache.get_jsonl_with_provenance("sam_stream", key)
     if rows is not None:
         with logged(config.SAM_MODEL, f"track '{concept}'", cached=True):
-            return await _parse(_replay(rows))
+            result = await _parse(_replay(rows))
+            latency_ms = round((time.time() - t0) * 1000, 1)
+            if on_theatre_event:
+                mask_cnt = sum(1 for r in result.records if r.kind == "mask")
+                obj_cnt = len(set(r.object_id for r in result.records if r.kind == "mask"))
+                on_theatre_event({
+                    "step_id": f"sam_track_{concept.replace(' ', '_')}",
+                    "model": config.SAM_MODEL,
+                    "status": "completed",
+                    "provenance": meta["provenance"],
+                    "sha256": key,
+                    "latency_ms": latency_ms,
+                    "artifact_preview": f"Tracked '{concept}': {mask_cnt} mask frames across {obj_cnt} persistent object(s).",
+                })
+            return result
 
     file_id = await upload_video(video)
     recorded: list[dict] = []
@@ -138,6 +155,19 @@ async def segment_concept(video: Path, concept: str) -> VideoSegmentationResult:
             async with stream, aclosing(_stream_events(stream)) as ev, aclosing(tee(ev)) as t:
                 result = await _parse(t)
     cache.put_jsonl("sam_stream", key, recorded)
+    latency_ms = round((time.time() - t0) * 1000, 1)
+    if on_theatre_event:
+        mask_cnt = sum(1 for r in result.records if r.kind == "mask")
+        obj_cnt = len(set(r.object_id for r in result.records if r.kind == "mask"))
+        on_theatre_event({
+            "step_id": f"sam_track_{concept.replace(' ', '_')}",
+            "model": config.SAM_MODEL,
+            "status": "completed",
+            "provenance": "live_api",
+            "sha256": key,
+            "latency_ms": latency_ms,
+            "artifact_preview": f"Tracked '{concept}': {mask_cnt} mask frames across {obj_cnt} persistent object(s) (live Meta stream).",
+        })
     return result
 
 
@@ -199,10 +229,11 @@ def result_to_tracks(result: VideoSegmentationResult, concept: str) -> list[dict
     return list(tracks.values())
 
 
-async def track_video(video: Path, concepts: list[str] | None = None) -> list[dict]:
+async def track_video(video: Path, concepts: list[str] | None = None,
+                      on_theatre_event: Callable[[dict], None] | None = None) -> list[dict]:
     """Run SAM 3.1 once per concept and merge the tracks."""
     concepts = concepts or config.SAM_CONCEPTS
-    results = await asyncio.gather(*(segment_concept(video, c) for c in concepts))
+    results = await asyncio.gather(*(segment_concept(video, c, on_theatre_event=on_theatre_event) for c in concepts))
     out: list[dict] = []
     for c, r in zip(concepts, results):
         out.extend(result_to_tracks(r, c))

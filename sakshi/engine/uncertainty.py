@@ -132,6 +132,9 @@ def step_displacements(tracks: list[dict], calib: hg.Calibration, n: int, jitter
 def measure(tracks: list[dict], calib: hg.Calibration, clock: FrameClock,
             cfg: MCConfig | None = None) -> dict[str, TrackResult]:
     cfg = cfg or MCConfig()
+    ground_sigma = getattr(calib, "ground_sigma_m", None)
+    if ground_sigma is None or ground_sigma <= 0:
+        ground_sigma = cfg.ground_sigma_m
     rng = np.random.default_rng(cfg.seed)
     prepared = {}
     for tr in tracks:
@@ -149,7 +152,7 @@ def measure(tracks: list[dict], calib: hg.Calibration, clock: FrameClock,
     samples_p = {tid: [] for tid in prepared}
     for _ in range(cfg.n):
         ip = calib.image_pts + rng.normal(0, cfg.click_sigma_px, calib.image_pts.shape)
-        gp = calib.ground_pts + rng.normal(0, cfg.ground_sigma_m, calib.ground_pts.shape)
+        gp = calib.ground_pts + rng.normal(0, ground_sigma, calib.ground_pts.shape)
         H, _ = cv2.findHomography(ip, gp, method=0)
         if H is None or not np.isfinite(H).all() or abs(np.linalg.det(H)) < 1e-12:
             continue

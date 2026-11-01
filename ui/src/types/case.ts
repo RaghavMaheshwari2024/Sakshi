@@ -26,6 +26,10 @@ export interface CalibrationInfo {
   ground_pts_m: [number, number][];
   reproj_rms_m: number;
   reproj_max_m: number;
+  ground_sigma_m?: number;
+  mode?: "custom" | "preset" | "google_maps";
+  preset_id?: string | null;
+  preset_label?: string | null;
   stop_line_m: [number, number][] | null;
   /** Camera pose recovered from the calibration (for the 3D replay). */
   camera?: {
@@ -69,10 +73,21 @@ export interface Trajectory {
   observed: boolean[];
 }
 
+export interface ExecutionProvenance {
+  mode: "live_api" | "hybrid_cache" | "disk_cache" | "precomputed_bundle";
+  live_calls: number;
+  cached_calls: number;
+  total_latency_ms: number;
+}
+
 export interface ModelCredit {
   model: string;
   role: string;
   did: string;
+  provenance?: "live_api" | "disk_cache" | "precomputed_bundle";
+  latency_ms?: number;
+  cache_sha256?: string;
+  sample_output?: any;
 }
 
 export interface ImpactEvent {
@@ -126,6 +141,7 @@ export interface CaseData {
   version: number;
   private_mode?: boolean;
   camera_mode?: "fixed" | "dashcam";
+  execution_provenance?: ExecutionProvenance;
   /** Which model did what on this case, written by the pipeline. */
   models?: ModelCredit[];
   contact?: { mode: string; per_vehicle?: Record<string, unknown>; occluded_frames?: Record<string, number> };

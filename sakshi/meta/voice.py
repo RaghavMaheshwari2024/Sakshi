@@ -12,6 +12,8 @@ import json
 import os
 import subprocess
 import tempfile
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -35,17 +37,32 @@ def _to_wav(src: Path) -> Path:
 
 
 def transcribe(path: str | Path, *, languages: list[str] | None = None,
-               diarize: bool = False) -> dict:
+               diarize: bool = False,
+               on_theatre_event: Callable[[dict], None] | None = None) -> dict:
     """Returns {"transcript", "turns", "audioDurationMs", ...}.
 
     `languages` are English names used as a bias, e.g. ["Hindi", "English"].
     """
+    t0 = time.time()
     src = Path(path)
     mode = "DIARIZATION" if diarize else "PUSH_TO_TALK"
     key = cache.key_for(config.VOICE_MODEL, cache.file_sha(src), mode, languages)
-    hit = cache.get_json("voice", key)
+    hit, meta = cache.get_json_with_provenance("voice", key)
     if hit is not None:
         with logged(config.VOICE_MODEL, "transcribe statement", cached=True):
+            latency_ms = round((time.time() - t0) * 1000, 1)
+            if on_theatre_event:
+                tr = hit.get("transcript", "")
+                snippet = tr[:60] + ("..." if len(tr) > 60 else "")
+                on_theatre_event({
+                    "step_id": f"voice_transcribe_{src.stem}",
+                    "model": config.VOICE_MODEL,
+                    "status": "completed",
+                    "provenance": meta["provenance"],
+                    "sha256": key,
+                    "latency_ms": latency_ms,
+                    "artifact_preview": f"ASR Transcript ({len(tr)} chars): \"{snippet}\"",
+                })
             return hit
 
     wav = _to_wav(src)
@@ -70,4 +87,17 @@ def transcribe(path: str | Path, *, languages: list[str] | None = None,
         os.unlink(wav)
     out = r.json()
     cache.put_json("voice", key, out)
+    latency_ms = round((time.time() - t0) * 1000, 1)
+    if on_theatre_event:
+        tr = out.get("transcript", "")
+        snippet = tr[:60] + ("..." if len(tr) > 60 else "")
+        on_theatre_event({
+            "step_id": f"voice_transcribe_{src.stem}",
+            "model": config.VOICE_MODEL,
+            "status": "completed",
+            "provenance": "live_api",
+            "sha256": key,
+            "latency_ms": latency_ms,
+            "artifact_preview": f"ASR Transcript ({len(tr)} chars): \"{snippet}\"",
+        })
     return out

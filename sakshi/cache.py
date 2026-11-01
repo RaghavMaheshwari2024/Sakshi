@@ -44,6 +44,16 @@ def get_json(namespace: str, key: str) -> Any | None:
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def get_json_with_provenance(namespace: str, key: str) -> tuple[Any | None, dict]:
+    """Return (data, meta) tracking whether this was a cache hit or live API call."""
+    data = get_json(namespace, key)
+    meta = {
+        "provenance": "disk_cache" if data is not None else "live_api",
+        "sha256": key,
+    }
+    return data, meta
+
+
 def _write_atomic(dest: Path, text: str) -> None:
     """Write to a temporary file, then rename: an interrupted run (Ctrl+C) can
     never leave a half-written cache file that breaks the next run."""
@@ -61,6 +71,16 @@ def get_jsonl(namespace: str, key: str) -> list[dict] | None:
     if not p.exists():
         return None
     return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+
+
+def get_jsonl_with_provenance(namespace: str, key: str) -> tuple[list[dict] | None, dict]:
+    """Return (rows, meta) tracking whether this was a cache hit or live API call."""
+    rows = get_jsonl(namespace, key)
+    meta = {
+        "provenance": "disk_cache" if rows is not None else "live_api",
+        "sha256": key,
+    }
+    return rows, meta
 
 
 def put_jsonl(namespace: str, key: str, rows: list[dict]) -> None:

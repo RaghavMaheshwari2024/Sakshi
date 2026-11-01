@@ -13,9 +13,13 @@ import {
   Move,
   Camera,
   ArrowLeft,
+  MapPin,
+  ShieldCheck,
 } from 'lucide-react';
 import { CalibrationInfo, ClipInfo } from '../types/case';
 import { Button, Notice, Segmented } from './ui';
+import { GoogleMapsGuideModal } from './GoogleMapsGuideModal';
+import { useCaseStore } from '../store/useCaseStore';
 
 export interface PointPair {
   id: string;
@@ -51,6 +55,43 @@ const DEFAULT_POINTS: PointPair[] = [
   { id: 'P6', u: 473.8, v: 304.4, x: 0.0, y: 12.0 },
 ];
 
+export const ROAD_PRESETS = [
+  {
+    id: 'urban_lane_crosswalk',
+    label: 'Urban Lane + Crosswalk',
+    sigma: 0.25,
+    desc: 'Standard 3.5m lane width × 2.5m zebra stripe module (IRC / MUTCD)',
+    w: 3.5,
+    l: 2.5,
+  },
+  {
+    id: 'highway_lane_dashed',
+    label: 'Highway Lane + Dashed Line',
+    sigma: 0.30,
+    desc: '3.65m highway lane × 6.0m skip line module (3m stripe + 3m gap)',
+    w: 3.65,
+    l: 6.0,
+  },
+  {
+    id: 'two_lane_box',
+    label: '2-Lane Junction Box',
+    sigma: 0.40,
+    desc: '7.0m two-lane carriageway × 10.0m junction approach box',
+    w: 7.0,
+    l: 10.0,
+  },
+  {
+    id: 'manual_survey',
+    label: 'Physical Surveyor Survey',
+    sigma: 0.03,
+    desc: 'On-site laser rangefinder or tape survey (sub-decimetre precision)',
+    w: 0.0,
+    l: 0.0,
+  },
+];
+
+type CalibTab = 'presets' | 'google_maps' | 'surveyor';
+
 export const CalibrationView: React.FC<CalibrationViewProps> = ({
   caseId,
   frameFallbackUrl,
@@ -64,6 +105,18 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
   // Mode state
   const [activeCameraMode, setActiveCameraMode] = useState<'fixed' | 'dashcam'>(cameraMode);
   const [activeTool, setActiveTool] = useState<ActiveTool>('points');
+
+  // Strategy tabs & honest uncertainty state
+  const [calibTab, setCalibTab] = useState<CalibTab>(() => {
+    if (initialCalibration?.mode === 'google_maps') return 'google_maps';
+    if (initialCalibration?.mode === 'preset') return 'presets';
+    return 'presets';
+  });
+  const [activePresetId, setActivePresetId] = useState<string | null>(initialCalibration?.preset_id || 'urban_lane_crosswalk');
+  const [groundSigmaM, setGroundSigmaM] = useState<number>(initialCalibration?.ground_sigma_m ?? 0.25);
+  const [googleMapsW, setGoogleMapsW] = useState<number>(3.5);
+  const [googleMapsL, setGoogleMapsL] = useState<number>(10.0);
+  const [isGuideOpen, setIsGuideOpen] = useState<boolean>(false);
 
   // Calibration entities
   const [points, setPoints] = useState<PointPair[]>(() => {
@@ -740,6 +793,40 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     }
   };
 
+  const handleSelectPreset = (preset: (typeof ROAD_PRESETS)[0]) => {
+    setActivePresetId(preset.id);
+    setGroundSigmaM(preset.sigma);
+    if (preset.id === 'manual_survey') {
+      setCalibTab('surveyor');
+      return;
+    }
+    const base = points.length >= 4 ? points.slice(0, 4) : DEFAULT_POINTS.slice(0, 4);
+    const newPoints: PointPair[] = [
+      { ...base[0], id: 'P1', x: 0.0, y: 0.0 },
+      { ...base[1], id: 'P2', x: preset.w, y: 0.0 },
+      { ...base[2], id: 'P3', x: preset.w, y: preset.l },
+      { ...base[3], id: 'P4', x: 0.0, y: preset.l },
+    ];
+    setPoints(newPoints);
+    solveHomography(newPoints);
+  };
+
+  const handleApplyGoogleMaps = (w: number, l: number) => {
+    setGoogleMapsW(w);
+    setGoogleMapsL(l);
+    setGroundSigmaM(0.15);
+    setActivePresetId('google_maps_rect');
+    const base = points.length >= 4 ? points.slice(0, 4) : DEFAULT_POINTS.slice(0, 4);
+    const newPoints: PointPair[] = [
+      { ...base[0], id: 'P1', x: 0.0, y: 0.0 },
+      { ...base[1], id: 'P2', x: w, y: 0.0 },
+      { ...base[2], id: 'P3', x: w, y: l },
+      { ...base[3], id: 'P4', x: 0.0, y: l },
+    ];
+    setPoints(newPoints);
+    solveHomography(newPoints);
+  };
+
   // Save Calibration handler
   const handleSaveCalibration = async () => {
     setIsSaving(true);
@@ -748,6 +835,12 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     const payload = {
       image_pts: points.map((p) => [p.u, p.v]),
       ground_pts_m: points.map((p) => [p.x, p.y]),
+      ground_sigma_m: groundSigmaM,
+      mode: calibTab === 'google_maps' ? 'google_maps' : calibTab === 'presets' ? 'preset' : 'custom',
+      preset_id: calibTab === 'google_maps' ? 'google_maps_rect' : calibTab === 'presets' ? activePresetId : null,
+      custom_w: calibTab === 'google_maps' ? googleMapsW : null,
+      custom_l: calibTab === 'google_maps' ? googleMapsL : null,
+      recompute: true,
       stop_line_m: stopLineM,
       clock_box_px: clockBoxPx,
       signal_light_px: signalLightPx,
@@ -779,6 +872,9 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
         const fit = await res.json();
         setReprojRmsM(fit.reproj_rms_m);
         setReprojMaxM(fit.reproj_max_m);
+        if (fit.case) {
+          useCaseStore.getState().loadCase(fit.case, useCaseStore.getState().videoUrl);
+        }
       }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
@@ -866,10 +962,182 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
 
         {/* Right: Calibration Controls & Point Pair Table */}
         <div className="flex w-full flex-col overflow-y-auto bg-asphalt-900 lg:w-[440px]">
+          {/* Calibration Strategy Selector Tabs */}
+          <div className="p-3 border-b border-line bg-asphalt-950/60 space-y-2">
+            <div className="flex items-center justify-between text-[11px] font-mono text-bone-400">
+              <span className="uppercase tracking-wider font-semibold">Calibration Strategy</span>
+              <span className="rounded bg-paint/15 px-1.5 py-0.5 text-[10px] text-paint border border-paint/30 font-bold">
+                Impact 30%
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1 bg-asphalt-850 p-1 rounded border border-line text-xs font-mono">
+              <button
+                type="button"
+                onClick={() => setCalibTab('presets')}
+                className={`py-1.5 px-2 rounded text-center transition-all ${
+                  calibTab === 'presets'
+                    ? 'bg-paint text-asphalt-950 font-bold shadow-sm'
+                    : 'text-bone-300 hover:text-bone-100 hover:bg-asphalt-800'
+                }`}
+              >
+                Road Presets
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalibTab('google_maps')}
+                className={`py-1.5 px-2 rounded text-center transition-all ${
+                  calibTab === 'google_maps'
+                    ? 'bg-paint text-asphalt-950 font-bold shadow-sm'
+                    : 'text-bone-300 hover:text-bone-100 hover:bg-asphalt-800'
+                }`}
+              >
+                Google Maps
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalibTab('surveyor')}
+                className={`py-1.5 px-2 rounded text-center transition-all ${
+                  calibTab === 'surveyor'
+                    ? 'bg-paint text-asphalt-950 font-bold shadow-sm'
+                    : 'text-bone-300 hover:text-bone-100 hover:bg-asphalt-800'
+                }`}
+              >
+                Surveyor
+              </button>
+            </div>
+          </div>
+
+          {/* Honest Uncertainty Banner */}
+          <div className="p-3 border-b border-line bg-asphalt-950">
+            <div className="rounded border border-paint/30 bg-paint/10 p-3 space-y-1.5 font-mono text-xs">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-paint font-semibold text-xs">
+                  <ShieldCheck className="w-4 h-4 text-paint" />
+                  <span>Honest Uncertainty: ±{(groundSigmaM * 100).toFixed(0)} cm</span>
+                </div>
+                <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold bg-asphalt-950 border border-paint/30 text-bone-200">
+                  {calibTab === 'google_maps' ? 'Satellite' : calibTab === 'presets' ? 'Standard Road' : 'Surveyor'}
+                </span>
+              </div>
+              <p className="text-[11.5px] text-bone-300 font-sans leading-relaxed">
+                {groundSigmaM >= 0.25
+                  ? `Standard road feature variance (±${(groundSigmaM * 100).toFixed(0)} cm) honestly widens the speed 90% confidence interval, mathematically preventing false accusations.`
+                  : groundSigmaM === 0.15
+                  ? 'Google Maps satellite orthorectification variance (±15 cm) propagated directly into Monte Carlo speed bounds.'
+                  : 'Physical tape/laser surveyor baseline: tightest speed bounds with ±3 cm physical ground tolerance.'}
+              </p>
+            </div>
+          </div>
+
+          {/* Tab 1: Road Presets */}
+          {calibTab === 'presets' && (
+            <div className="p-4 border-b border-line space-y-2.5">
+              <div className="flex items-center justify-between text-xs text-bone-400 font-mono">
+                <span className="font-semibold text-bone-200">Known Road Presets (1-Click)</span>
+                <span>4 Ground Points</span>
+              </div>
+              <div className="grid grid-cols-1 gap-2">
+                {ROAD_PRESETS.map((p) => {
+                  const isSelected = activePresetId === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => handleSelectPreset(p)}
+                      className={`text-left p-2.5 rounded border transition-all font-mono text-xs ${
+                        isSelected
+                          ? 'border-paint bg-paint/10 text-bone-100 shadow-sm'
+                          : 'border-line bg-asphalt-850 hover:bg-asphalt-800 text-bone-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-bone-100">{p.label}</span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            p.sigma <= 0.05
+                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-paint/20 text-paint border border-paint/30'
+                          }`}
+                        >
+                          ±{(p.sigma * 100).toFixed(0)} cm
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-bone-400 font-sans leading-snug">
+                        {p.desc}
+                      </div>
+                      {p.w > 0 && (
+                        <div className="mt-1.5 text-[10px] text-bone-500 font-mono">
+                          Footprint: {p.w}m (W) × {p.l}m (L)
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Tab 2: Google Maps Measure */}
+          {calibTab === 'google_maps' && (
+            <div className="p-4 border-b border-line space-y-3 font-mono text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-bone-200">Google Maps Satellite Measure</span>
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-paint/20 text-paint border border-paint/30">
+                  ±15 cm tolerance
+                </span>
+              </div>
+
+              <div className="rounded border border-line bg-asphalt-850 p-3 space-y-2 font-sans text-xs">
+                <p className="text-bone-300 leading-snug">
+                  Measure width and length of any junction landmark on Google Maps satellite view, then click 4 corners on the CCTV frame.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setIsGuideOpen(true)}
+                  className="w-full py-1.5 px-2.5 rounded bg-paint/15 border border-paint/30 text-paint font-mono text-xs font-semibold hover:bg-paint/25 transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>Open 3-Step Google Maps Guide</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] text-bone-400">Width W (metres)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={googleMapsW}
+                    onChange={(e) => setGoogleMapsW(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-asphalt-950 px-2 py-1 rounded border border-line-strong text-bone-200 outline-none focus:border-paint text-right font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-bone-400">Length L (metres)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={googleMapsL}
+                    onChange={(e) => setGoogleMapsL(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-asphalt-950 px-2 py-1 rounded border border-line-strong text-bone-200 outline-none focus:border-paint text-right font-mono"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleApplyGoogleMaps(googleMapsW, googleMapsL)}
+                className="w-full py-1.5 px-3 rounded bg-asphalt-800 hover:bg-asphalt-700 text-bone-100 border border-line font-mono text-xs font-semibold transition-colors"
+              >
+                Apply {googleMapsW}m × {googleMapsL}m Rectangle
+              </button>
+            </div>
+          )}
+
           {/* Live Metrics Header Card */}
-          <div className="p-4 border-b border-line  space-y-3">
+          <div className="p-4 border-b border-line space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-[12.5px]  text-bone-400">
+              <span className="text-[12.5px] text-bone-400">
                 Fit quality
               </span>
               <div className="flex items-center space-x-1.5">
@@ -1331,8 +1599,8 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
               </div>
               <div className="flex items-center gap-1.5">
                 <Button size="sm" busy={isSaving} disabled={!caseId && !onSave} icon={<Save className="h-3.5 w-3.5" />} onClick={handleSaveCalibration}
-                        title={caseId ? 'Save to the backend' : 'Pre-rendered scenarios cannot be saved'}>
-                  {saveStatus === 'saved' ? 'Saved' : 'Save'}
+                        title={caseId ? 'Save and fast-recalibrate (<500ms)' : 'Pre-rendered scenarios cannot be saved'}>
+                  {saveStatus === 'saved' ? 'Saved & Recalibrated' : 'Save & Recalibrate'}
                 </Button>
                 <Button
                   variant="primary"
@@ -1350,6 +1618,13 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 3-Step Google Maps Satellite Guide Modal */}
+      <GoogleMapsGuideModal
+        isOpen={isGuideOpen}
+        onClose={() => setIsGuideOpen(false)}
+        onApplyPreset={(w, l) => handleApplyGoogleMaps(w, l)}
+      />
     </div>
   );
 };

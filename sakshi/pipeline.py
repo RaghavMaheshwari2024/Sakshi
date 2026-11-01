@@ -55,7 +55,8 @@ def _time_to_seconds(r: dict) -> float | None:
 
 
 def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, progress: Progress,
-                ticks_override=None, stats: dict | None = None):
+                ticks_override=None, stats: dict | None = None,
+                on_theatre_event: Callable[[dict], None] | None = None):
     """Returns (FrameClock, ticks). Ticks are kept for the drop-aware refinement."""
         # One pass, keeping only the previous frame: memory stays flat for long clips.
     dup_list, cand_all = [], []
@@ -85,7 +86,8 @@ def build_clock(video: Path, n: int, fps: float, pts: np.ndarray, clock_box, pro
         frames = read_frames(video, set(cand))
         ticks = []
         for i in cand:
-            sec = _time_to_seconds(spark.read_timestamp(crop(frames[i], clock_box, 4)))
+            sec = _time_to_seconds(spark.read_timestamp(crop(frames[i], clock_box, 4),
+                                                        on_theatre_event=on_theatre_event))
             if sec is not None:
                 ticks.append((i, sec))
         # Keep only ticks that advance by whole seconds (rejects misreads).
@@ -224,15 +226,25 @@ def check_party(party: dict[str, str], statement_ids: list[str], involved: list[
     return party, notes
 
 
+def _call_wonder(fn, *args, on_theatre_event=None, **kwargs):
+    if on_theatre_event is not None:
+        try:
+            return fn(*args, on_theatre_event=on_theatre_event, **kwargs)
+        except TypeError:
+            pass
+    return fn(*args, **kwargs)
+
+
 def match_parties(wonder, keyframes: list, closeups: list[str], statements: list[dict], shown_ids: list[str],
-                  involved: list[str], near_miss: bool, party: dict | None, progress: Progress = _noop):
+                  involved: list[str], near_miss: bool, party: dict | None, progress: Progress = _noop,
+                  on_theatre_event: Callable[[dict], None] | None = None):
     """Which road user each statement-giver drove: Muse Wonder's suggestion from
     the labelled keyframes (the last len(closeups) images are close-ups of the
     `involved` vehicles), checked against the geometry. If statements stay
     unmatched, ask once more with the close-ups only. A party map given by the
     user wins. Returns (scene, party)."""
-    scene = wonder.describe_scene(keyframes, statements, shown_ids, involved=involved,
-                                  n_closeups=len(closeups), near_miss=near_miss)
+    scene = _call_wonder(wonder.describe_scene, keyframes, statements, shown_ids, involved=involved,
+                         n_closeups=len(closeups), near_miss=near_miss, on_theatre_event=on_theatre_event)
     progress("scene", {"suggested": scene["party_to_track"]})
     if party:
         return scene, party
@@ -241,8 +253,8 @@ def match_parties(wonder, keyframes: list, closeups: list[str], statements: list
     party, notes = check_party(party, sids, involved)
     if len(party) < len(sids) and closeups:
         closeup_imgs = keyframes[len(keyframes) - len(closeups):]
-        focused = wonder.describe_scene(closeup_imgs, statements, involved, involved=involved,
-                                        n_closeups=len(closeup_imgs), near_miss=near_miss)
+        focused = _call_wonder(wonder.describe_scene, closeup_imgs, statements, involved, involved=involved,
+                               n_closeups=len(closeup_imgs), near_miss=near_miss, on_theatre_event=on_theatre_event)
         for p in focused["party_to_track"]:
             party.setdefault(p["statement_id"], p["track_id"])
         party, more = check_party(party, sids, involved)
@@ -254,7 +266,8 @@ def match_parties(wonder, keyframes: list, closeups: list[str], statements: list
     return scene, party
 
 
-def read_claims(wonder, statements: list[dict], party: dict[str, str], progress: Progress = _noop) -> list[dict]:
+def read_claims(wonder, statements: list[dict], party: dict[str, str], progress: Progress = _noop,
+                on_theatre_event: Callable[[dict], None] | None = None) -> list[dict]:
     """Claims from the statements, checked before any verdict is given.
 
     Each claim is repaired where its label contradicts its value
@@ -270,13 +283,15 @@ def read_claims(wonder, statements: list[dict], party: dict[str, str], progress:
         cl = [claims_mod.normalize(c) for c in raw]
         return cl, [claims_mod.problems(c, sids, tracks) for c in cl]
 
-    first = wonder.extract_claims(statements, party)
+    first = _call_wonder(wonder.extract_claims, statements, party, on_theatre_event=on_theatre_event)
     claims, probs = check(first)
     flat = [p for ps in probs for p in ps]
     if flat:
         progress("claims", {"malformed": flat, "action": "asking Muse Wonder once more"})
         try:
-            claims2, probs2 = check(wonder.extract_claims(statements, party, previous=first, problems=flat))
+            claims2, probs2 = check(_call_wonder(wonder.extract_claims, statements, party,
+                                                 previous=first, problems=flat,
+                                                 on_theatre_event=on_theatre_event))
         except Exception as e:  # noqa: BLE001
             progress("claims", {"retry_failed": str(e)[:200]})
         else:
@@ -378,24 +393,51 @@ def choose_signal(sig: dict, chosen: str | None, tracks: list[dict] | None = Non
                       "choose which one governs the stop line")
 
 
-def _models_summary(tracks, stats, statements, scene, party, claims, report, live: bool) -> list[dict]:
+def _models_summary(tracks, stats, statements, scene, party, claims, report, live: bool,
+                    theatre_records: list[dict] | None = None) -> list[dict]:
     """What each Meta model did in this case, for the UI's model strip and the report."""
     out = []
+    theatre = theatre_records or []
     if live:
         kinds: dict[str, int] = {}
         for t in tracks:
             kinds[t["concept"]] = kinds.get(t["concept"], 0) + 1
-        out.append({"model": config.SAM_MODEL, "role": "tracking",
-                    "did": "tracked " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))})
+        sam_events = [e for e in theatre if "sam" in e.get("model", "")]
+        out.append({
+            "model": config.SAM_MODEL,
+            "role": "tracking",
+            "did": "tracked " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())),
+            "provenance": "live_api" if any(e.get("provenance") == "live_api" for e in sam_events) else ("disk_cache" if sam_events else "precomputed_bundle"),
+            "latency_ms": round(sum(e.get("latency_ms", 0) for e in sam_events), 1),
+            "cache_sha256": sam_events[0].get("sha256", "") if sam_events else "",
+            "sample_output": sam_events[-1].get("artifact_preview", f"Tracked {len(tracks)} objects") if sam_events else f"Tracked {len(tracks)} objects",
+        })
     reads = stats.get("spark_clock_reads", 0) + stats.get("spark_light_reads", 0)
-    if reads:
-        out.append({"model": config.SPARK_MODEL, "role": "reading the video",
-                    "did": f"read the clock on {stats.get('spark_clock_reads', 0)} frames and the signal on "
-                           f"{stats.get('spark_light_reads', 0)} frames"})
+    spark_events = [e for e in theatre if "spark" in e.get("model", "")]
+    if reads or spark_events:
+        out.append({
+            "model": config.SPARK_MODEL,
+            "role": "reading the video",
+            "did": f"read the clock on {stats.get('spark_clock_reads', 0)} frames and the signal on {stats.get('spark_light_reads', 0)} frames",
+            "provenance": "live_api" if any(e.get("provenance") == "live_api" for e in spark_events) else ("disk_cache" if spark_events else "precomputed_bundle"),
+            "latency_ms": round(sum(e.get("latency_ms", 0) for e in spark_events), 1),
+            "cache_sha256": spark_events[0].get("sha256", "") if spark_events else "",
+            "sample_output": spark_events[-1].get("artifact_preview", "") if spark_events else "",
+        })
     heard = sum(1 for s in statements if s.get("transcribed"))
-    if heard:
-        out.append({"model": config.VOICE_MODEL, "role": "statements", "did": f"transcribed {heard} recorded statements"})
-    if scene or (claims and live) or report:
+    voice_events = [e for e in theatre if "voice" in e.get("model", "")]
+    if heard or voice_events:
+        out.append({
+            "model": config.VOICE_MODEL,
+            "role": "statements",
+            "did": f"transcribed {heard or len(voice_events)} recorded statements",
+            "provenance": "live_api" if any(e.get("provenance") == "live_api" for e in voice_events) else ("disk_cache" if voice_events else "precomputed_bundle"),
+            "latency_ms": round(sum(e.get("latency_ms", 0) for e in voice_events), 1),
+            "cache_sha256": voice_events[0].get("sha256", "") if voice_events else "",
+            "sample_output": voice_events[-1].get("artifact_preview", "") if voice_events else "",
+        })
+    wonder_events = [e for e in theatre if "wonder" in e.get("model", "")]
+    if scene or (claims and live) or report or wonder_events:
         did = []
         if scene:
             did.append(f"matched {len(scene.get('party_to_track', []))} of {len(statements)} statements to road users")
@@ -403,12 +445,26 @@ def _models_summary(tracks, stats, statements, scene, party, claims, report, liv
             did.append(f"extracted {len(claims)} checkable claims")
         if report:
             did.append("wrote the report summary" + (" (number check passed)" if report["validator"]["passed"] else ""))
-        out.append({"model": config.WONDER_MODEL, "role": "understanding", "did": "; ".join(did)})
+        out.append({
+            "model": config.WONDER_MODEL,
+            "role": "understanding",
+            "did": "; ".join(did) if did else "scene and claim reasoning",
+            "provenance": "live_api" if any(e.get("provenance") == "live_api" for e in wonder_events) else ("disk_cache" if wonder_events else "precomputed_bundle"),
+            "latency_ms": round(sum(e.get("latency_ms", 0) for e in wonder_events), 1),
+            "cache_sha256": wonder_events[0].get("sha256", "") if wonder_events else "",
+            "sample_output": wonder_events[-1].get("artifact_preview", "") if wonder_events else "",
+        })
     return out
 
 
 def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] | None = None,
         mc: MCConfig | None = None) -> dict:
+    theatre_records: list[dict] = []
+
+    def on_theatre(evt: dict):
+        theatre_records.append(evt)
+        progress("model_theatre", evt)
+
     case_dir = Path(case_dir)
     inp = json.loads((case_dir / "case_input.json").read_text())
     src = find_input_video(case_dir)
@@ -417,7 +473,14 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     progress("video", {"frames": info.n, "fps": info.fps, "size": [info.width, info.height]})
 
     cal_in = inp["calibration"]
-    calib = homography.fit(cal_in["image_pts"], cal_in["ground_pts_m"])
+    calib = homography.fit(
+        cal_in["image_pts"],
+        cal_in["ground_pts_m"],
+        ground_sigma_m=float(cal_in.get("ground_sigma_m", 0.05)),
+        mode=str(cal_in.get("mode", "custom")),
+        preset_id=cal_in.get("preset_id"),
+        preset_label=cal_in.get("preset_label"),
+    )
     progress("calibration", {"reproj_rms_m": round(calib.rms_err_m, 3)})
 
     stats: dict = {}
@@ -425,7 +488,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         clk, clk_ticks = clock_mod.from_fps(info.n, info.fps), None
     else:
         clk, clk_ticks = build_clock(video, info.n, info.fps, info.pts_s, cal_in.get("clock_box_px"),
-                                     progress, ticks_override=inp.get("clock_ticks_override"), stats=stats)
+                                     progress, ticks_override=inp.get("clock_ticks_override"), stats=stats,
+                                     on_theatre_event=on_theatre)
     progress("clock", {"method": clk.method})
 
     contact_mode = inp.get("contact_mode", config.CONTACT_MODE)
@@ -436,7 +500,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
 
         concepts = list(config.SAM_CONCEPTS) + (["wheel"] if contact_mode == "wheels" else [])
         progress("tracking", {"concepts": concepts})
-        tracks = asyncio.run(sam.track_video(video, concepts))
+        tracks = asyncio.run(sam.track_video(video, concepts, on_theatre_event=on_theatre))
     progress("tracking", {"tracks": [t["id"] for t in tracks if t["concept"] != "wheel"]})
     contact_report: dict = {}
     if contact_mode == "wheels":
@@ -506,7 +570,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
         if s.get("audio"):
             from .meta import voice
 
-            tr = voice.transcribe(case_dir / s["audio"], languages=inp.get("languages"))
+            tr = voice.transcribe(case_dir / s["audio"], languages=inp.get("languages"),
+                                  on_theatre_event=on_theatre)
             s = {**s, "text": tr.get("transcript", ""), "transcribed": True}
         statements.append({k: s[k] for k in ("id", "speaker", "text") if k in s} | {"transcribed": s.get("transcribed", False)})
     progress("statements", {"n": len(statements)})
@@ -525,7 +590,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
                                                  focus=involved)
         near_miss = impact is None and closest is not None
         scene, party = match_parties(wonder, keyframes, closeups, statements, [t["id"] for t in shown],
-                                     involved, near_miss, party, progress)
+                                     involved, near_miss, party, progress, on_theatre_event=on_theatre)
 
     checked = []
     ctx = {"impact_t": impact["t"] if impact else None, "closest_t": closest["t"] if closest else None,
@@ -536,7 +601,7 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     elif statements and party:
         from .meta import wonder
 
-        raw_claims = read_claims(wonder, statements, party, progress)
+        raw_claims = read_claims(wonder, statements, party, progress, on_theatre_event=on_theatre)
         checked = [claims_mod.evaluate(c, results, ctx) for c in raw_claims]
         progress("claims", {"verdicts": [c["verdict"] for c in checked]})
 
@@ -557,15 +622,35 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     if tracks_override is None and (impact or checked):
         from .meta import wonder
 
-        report = wonder.write_report(facts)
+        report = wonder.write_report(facts, on_theatre_event=on_theatre)
         progress("report", {"validator": report["validator"]})
+
+    live_calls = sum(1 for e in theatre_records if e.get("provenance") == "live_api")
+    cached_calls = sum(1 for e in theatre_records if e.get("provenance") == "disk_cache")
+    total_latency_ms = sum(e.get("latency_ms", 0.0) for e in theatre_records)
+    if tracks_override is not None:
+        mode = "precomputed_bundle"
+    elif live_calls > 0 and cached_calls == 0:
+        mode = "live_api"
+    elif live_calls > 0 and cached_calls > 0:
+        mode = "hybrid_cache"
+    else:
+        mode = "disk_cache"
+
+    execution_provenance = {
+        "mode": mode,
+        "live_calls": live_calls,
+        "cached_calls": cached_calls,
+        "total_latency_ms": round(total_latency_ms, 1),
+    }
 
     case = {
         "version": 1,
         "camera_mode": inp.get("camera_mode", "fixed"),
         "contact": {"mode": contact_mode, "per_vehicle": contact_report, "occluded_frames": occluded},
         "models": _models_summary(tracks, stats, statements, scene, party, checked, report,
-                                  live=tracks_override is None),
+                                  live=tracks_override is None, theatre_records=theatre_records),
+        "execution_provenance": execution_provenance,
         "private_mode": config.PRIVATE_MODE,
         "clip": {"file": video.name, "frames": info.n, "fps_nominal": info.fps,
                  "width": info.width, "height": info.height},
@@ -588,3 +673,128 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
     (case_dir / "case.json").write_text(json.dumps(case, default=str))
     progress("done", {"case": str(case_dir / "case.json")})
     return case
+
+
+def recalibrate_case(case_dir: Path, cal_body: dict, mc: MCConfig | None = None) -> dict:
+    """Fast deterministic recomputation of trajectories, Monte Carlo confidence intervals,
+    events, and claim verdicts when calibration geometry or uncertainty changes (<500ms).
+    """
+    mc = mc or MCConfig(n=8)
+    case_dir = Path(case_dir)
+    case_path = case_dir / "case.json"
+    if not case_path.exists():
+        raise FileNotFoundError(f"Case {case_dir.name} has not been run yet")
+
+    case = json.loads(case_path.read_text())
+    image_pts = cal_body["image_pts"]
+    preset_id = cal_body.get("preset_id")
+
+    if preset_id:
+        calib = homography.fit_preset(
+            image_pts,
+            preset_id=preset_id,
+            custom_w=cal_body.get("custom_w"),
+            custom_l=cal_body.get("custom_l"),
+        )
+    else:
+        calib = homography.fit(
+            image_pts,
+            cal_body["ground_pts_m"],
+            ground_sigma_m=float(cal_body.get("ground_sigma_m", 0.05)),
+            mode=str(cal_body.get("mode", "custom")),
+            preset_id=cal_body.get("preset_id"),
+            preset_label=cal_body.get("preset_label"),
+        )
+
+    # Reconstruct clock from case.json
+    c_json = case["clock"]
+    t_arr = np.array([f["t"] for f in c_json["frames"]], dtype=float)
+    dup_arr = np.array([f.get("dup", False) for f in c_json["frames"]], dtype=bool)
+    sig_arr = np.full(len(t_arr), float(c_json.get("median_sigma_s", 0.01)))
+    gaps_arr = np.array(c_json["gaps"], dtype=int) if "gaps" in c_json else None
+    clk = clock_mod.FrameClock(t=t_arr, sigma=sig_arr, method=c_json.get("method", "nominal_fps"),
+                               duplicate=dup_arr, gaps=gaps_arr)
+
+    tracks = case.get("tracks", [])
+    movers = [t for t in tracks if t.get("concept") in events.MOVERS]
+    movers_all = list(movers)
+
+    results = measure(movers, calib, clk, mc)
+    impacts = events.detect_impacts(results, tracks)
+    impact = impacts[0] if impacts else None
+    closest = None if impact else events.closest_approach(results, tracks)
+    braking, momentum, speeds = {}, None, {}
+
+    if impact:
+        results = split_at_impact(results, movers, calib, clk, mc, impact, post_tracks=movers_all)
+        for tid in impact["tracks"]:
+            braking[tid] = events.braking_onset(results[tid], impact["t"])
+            speeds[tid] = {
+                "just_before_impact": events.window_speed(results[tid], impact["t"] - 1.2, impact["t"] - 0.2),
+                "at_impact": events.window_speed(results[tid], impact["t"] - 0.25, impact["t"] - 0.05),
+            }
+        momentum = events.momentum_check(impact, results, tracks)
+    elif closest:
+        for tid in closest["tracks"]:
+            speeds[tid] = {
+                "just_before_closest_approach": events.window_speed(results[tid], closest["t"] - 1.2, closest["t"] - 0.2)
+            }
+
+    stop_line = cal_body.get("stop_line_m", case.get("calibration", {}).get("stop_line_m"))
+    signal_changes = case.get("facts", {}).get("signal_changes")
+    signal_note = case.get("facts", {}).get("signal_note")
+    signal_track = case.get("facts", {}).get("signal_track")
+
+    ctx = {
+        "impact_t": impact["t"] if impact else None,
+        "closest_t": closest["t"] if closest else None,
+        "signal_changes": signal_changes,
+        "stop_line": stop_line,
+        "braking": braking,
+        "signal_note": signal_note,
+    }
+
+    raw_claims = case.get("claims", [])
+    checked = [claims_mod.evaluate(c, results, ctx) for c in raw_claims]
+
+    facts = {
+        "impact": impact,
+        "closest_approach": closest,
+        "speeds": speeds,
+        "braking": braking,
+        "momentum_check": momentum,
+        "signal_changes": signal_changes,
+        "signal_track": signal_track,
+        "signal_note": signal_note,
+        "claims": [{k: c[k] for k in ("statement_id", "quote", "verdict", "reason", "measured")} for c in checked],
+        "clock_method": clk.method,
+        "calibration_rms_m": round(calib.rms_err_m, 3),
+    }
+
+    clip = case.get("clip", {})
+    cam_pose = homography.camera_pose(calib.H, clip.get("width", 1920), clip.get("height", 1080))
+    case["calibration"] = calib.to_json() | {
+        "stop_line_m": stop_line,
+        "camera": cam_pose,
+    }
+    case["trajectories"] = [r.to_json() for r in results.values()]
+    case["events"] = impacts
+    case["facts"] = facts
+    case["claims"] = checked
+
+    case_path.write_text(json.dumps(case, default=str))
+
+    inp_path = case_dir / "case_input.json"
+    if inp_path.exists():
+        inp = json.loads(inp_path.read_text())
+        cal_to_save = dict(cal_body)
+        cal_to_save["ground_pts_m"] = calib.ground_pts.tolist()
+        cal_to_save["ground_sigma_m"] = calib.ground_sigma_m
+        cal_to_save["mode"] = calib.mode
+        cal_to_save["preset_id"] = calib.preset_id
+        cal_to_save["preset_label"] = calib.preset_label
+        inp["calibration"] = cal_to_save
+        inp_path.write_text(json.dumps(inp, indent=1))
+
+    return case
+

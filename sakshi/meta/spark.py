@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import base64
 import json
+import time
+from collections.abc import Callable
 
 import cv2
 import numpy as np
@@ -36,12 +38,27 @@ def _data_url(img_bgr: np.ndarray, max_side: int = 768) -> tuple[str, bytes]:
     return "data:image/png;base64," + base64.b64encode(b).decode(), b
 
 
-def _ask(job: str, img_bgr: np.ndarray, prompt: str, schema: dict) -> dict:
+def _ask(job: str, img_bgr: np.ndarray, prompt: str, schema: dict,
+         on_theatre_event: Callable[[dict], None] | None = None) -> dict:
+    t0 = time.time()
     url, raw = _data_url(img_bgr)
     key = cache.key_for(config.SPARK_MODEL, job, prompt, schema, raw)
-    hit = cache.get_json("spark", key)
+    hit, meta = cache.get_json_with_provenance("spark", key)
     if hit is not None:
         with logged(config.SPARK_MODEL, job, cached=True):
+            latency_ms = round((time.time() - t0) * 1000, 1)
+            if on_theatre_event:
+                prev = (f"OCR Clock: '{hit.get('time', '')}' ({hit.get('date', '')})"
+                        if "clock" in job else f"Signal Lamp: {hit.get('state', '')}")
+                on_theatre_event({
+                    "step_id": f"spark_{job.replace(' ', '_')}",
+                    "model": config.SPARK_MODEL,
+                    "status": "completed",
+                    "provenance": meta["provenance"],
+                    "sha256": key,
+                    "latency_ms": latency_ms,
+                    "artifact_preview": prev,
+                })
             return hit
     with logged(config.SPARK_MODEL, job):
         resp = sync_client().chat.completions.create(
@@ -65,6 +82,19 @@ def _ask(job: str, img_bgr: np.ndarray, prompt: str, schema: dict) -> dict:
         raise RuntimeError(f"{config.SPARK_MODEL} returned no content for '{job}'")
     out = json.loads(content)
     cache.put_json("spark", key, out)
+    latency_ms = round((time.time() - t0) * 1000, 1)
+    if on_theatre_event:
+        prev = (f"OCR Clock: '{out.get('time', '')}' ({out.get('date', '')})"
+                if "clock" in job else f"Signal Lamp: {out.get('state', '')}")
+        on_theatre_event({
+            "step_id": f"spark_{job.replace(' ', '_')}",
+            "model": config.SPARK_MODEL,
+            "status": "completed",
+            "provenance": "live_api",
+            "sha256": key,
+            "latency_ms": latency_ms,
+            "artifact_preview": prev,
+        })
     return out
 
 
@@ -85,14 +115,15 @@ TIMESTAMP_SCHEMA = {
 }
 
 
-def read_timestamp(crop_bgr: np.ndarray) -> dict:
+def read_timestamp(crop_bgr: np.ndarray,
+                   on_theatre_event: Callable[[dict], None] | None = None) -> dict:
     """Read a CCTV/dashcam clock overlay. Copy digits exactly; never guess."""
     prompt = (
         "This is a crop of a security-camera or dashcam frame containing a burned-in "
         "date/time overlay. Transcribe the overlay exactly. If any digit is unreadable, "
         "set readable=false. Do not infer or correct digits."
     )
-    return _ask("read cctv clock", crop_bgr, prompt, TIMESTAMP_SCHEMA)
+    return _ask("read cctv clock", crop_bgr, prompt, TIMESTAMP_SCHEMA, on_theatre_event=on_theatre_event)
 
 
 LIGHT_SCHEMA = {
@@ -105,9 +136,10 @@ LIGHT_SCHEMA = {
 }
 
 
-def read_light(crop_bgr: np.ndarray) -> str:
+def read_light(crop_bgr: np.ndarray,
+               on_theatre_event: Callable[[dict], None] | None = None) -> str:
     prompt = (
         "This is a crop of a traffic signal. Which lamp is lit? Answer 'unclear' if "
         "you cannot tell with confidence."
     )
-    return _ask("read traffic light", crop_bgr, prompt, LIGHT_SCHEMA)["state"]
+    return _ask("read traffic light", crop_bgr, prompt, LIGHT_SCHEMA, on_theatre_event=on_theatre_event)["state"]

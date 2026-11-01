@@ -1,10 +1,11 @@
 /** How Sakshi is built: models, pipeline, engine and the decisions behind them. */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Workflow } from 'lucide-react';
+import { Terminal, Workflow } from 'lucide-react';
 import { useCaseStore } from '../store/useCaseStore';
 import { Benchmark, loadBenchmark } from '../utils/benchmark';
 import { DECISIONS, ENGINE, MODELS } from '../content/models';
 import { Button } from './ui';
+import { ModelTheatre } from './ModelTheatre';
 import { gsap, useGSAP, useReveal, withMotion } from '../lib/motion';
 
 const fmt = (n: number) => n.toLocaleString('en-US');
@@ -51,6 +52,7 @@ const Architecture: React.FC = () => {
 export const SystemView: React.FC<{ onOpenPipeline: () => void }> = ({ onOpenPipeline }) => {
   const caseData = useCaseStore((s) => s.caseData);
   const [bench, setBench] = useState<Benchmark | null>(null);
+  const [isTheatreOpen, setIsTheatreOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => { loadBenchmark().then(setBench); }, []);
@@ -81,7 +83,14 @@ export const SystemView: React.FC<{ onOpenPipeline: () => void }> = ({ onOpenPip
       <section className="mt-16">
         <div data-reveal className="flex flex-wrap items-end justify-between gap-3">
           <h2 className="font-serif text-[26px] font-light text-bone">Five Meta models, one job each</h2>
-          <Button size="sm" icon={<Workflow className="h-3.5 w-3.5" />} onClick={onOpenPipeline}>Watch the pipeline run</Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="secondary" icon={<Terminal className="h-3.5 w-3.5 text-paint" />} onClick={() => setIsTheatreOpen(true)}>
+              Open Model Theatre
+            </Button>
+            <Button size="sm" icon={<Workflow className="h-3.5 w-3.5" />} onClick={onOpenPipeline}>
+              Watch the pipeline run
+            </Button>
+          </div>
         </div>
         <div className="mt-5 divide-y divide-line border-y border-line">
           {MODELS.map((m) => {
@@ -170,6 +179,12 @@ export const SystemView: React.FC<{ onOpenPipeline: () => void }> = ({ onOpenPip
           ))}
         </div>
       </section>
+
+      <ModelTheatre
+        isOpen={isTheatreOpen}
+        onClose={() => setIsTheatreOpen(false)}
+        caseData={caseData}
+      />
     </div>
   );
 };

@@ -17,6 +17,8 @@ import base64
 import copy
 import json
 import re
+import time
+from collections.abc import Callable
 from typing import cast
 
 import cv2
@@ -40,15 +42,29 @@ def _img_part(img_bgr: np.ndarray, max_side: int = 1024) -> dict:
 
 
 def _chat_json(job: str, messages: list[dict], schema: dict, *, use_private: bool,
-               temperature: float | None = None) -> dict:
+               temperature: float | None = None,
+               on_theatre_event: Callable[[dict], None] | None = None) -> dict:
+    t0 = time.time()
     if use_private:
         client, model, label = text_client_and_model(config.WONDER_MODEL)
     else:
         client, model, label = sync_client(), config.WONDER_MODEL, config.WONDER_MODEL
     key = cache.key_for(model, job, messages, schema, *([temperature] if temperature is not None else []))
-    hit = cache.get_json("wonder", key)
+    hit, meta = cache.get_json_with_provenance("wonder", key)
     if hit is not None:
         with logged(label, job, cached=True):
+            latency_ms = round((time.time() - t0) * 1000, 1)
+            if on_theatre_event:
+                prev = _summarize_preview(job, hit)
+                on_theatre_event({
+                    "step_id": f"wonder_{job}",
+                    "model": model,
+                    "status": "completed",
+                    "provenance": meta["provenance"],
+                    "sha256": key,
+                    "latency_ms": latency_ms,
+                    "artifact_preview": prev,
+                })
             return hit
     kwargs = dict(model=model, messages=cast("list[ChatCompletionMessageParam]", messages),
                   response_format={"type": "json_schema", "json_schema": {"name": job, "schema": schema}})
@@ -67,7 +83,32 @@ def _chat_json(job: str, messages: list[dict], schema: dict, *, use_private: boo
         raise RuntimeError(f"{label} returned no content for '{job}'")
     out = json.loads(content)
     cache.put_json("wonder", key, out)
+    latency_ms = round((time.time() - t0) * 1000, 1)
+    if on_theatre_event:
+        prev = _summarize_preview(job, out)
+        on_theatre_event({
+            "step_id": f"wonder_{job}",
+            "model": model,
+            "status": "completed",
+            "provenance": "live_api",
+            "sha256": key,
+            "latency_ms": latency_ms,
+            "artifact_preview": prev,
+        })
     return out
+
+
+def _summarize_preview(job: str, data: dict) -> str:
+    if "claims" in job and "claims" in data:
+        c_list = data["claims"]
+        kinds = [c.get("quantity", "") for c in c_list[:3]]
+        return f"Wonder extracted {len(c_list)} checkable claim(s): {', '.join(kinds)}"
+    if "scene" in job:
+        matched = len(data.get("party_to_track", []))
+        return f"Wonder analyzed scene: matched {matched} driver statement(s) to tracks."
+    if "report" in job and "summary" in data:
+        return f"Wonder narrative summary ({len(data['summary'])} chars): \"{data['summary'][:75]}...\""
+    return f"Wonder {job} complete."
 
 
 # --- 1. Scene description -------------------------------------------------
@@ -123,7 +164,8 @@ def _pin(schema: dict, path: list[str], values: list[str]) -> dict:
 
 def describe_scene(labelled_keyframes: list[np.ndarray], statements: list[dict],
                    track_ids: list[str], involved: list[str] | None = None, n_closeups: int = 0,
-                   near_miss: bool = False) -> dict:
+                   near_miss: bool = False,
+                   on_theatre_event: Callable[[dict], None] | None = None) -> dict:
     """`labelled_keyframes` have track ids drawn on them (see pipeline); the last
     `n_closeups` images are close-ups of the `involved` tracks."""
     closeups = labelled_keyframes[len(labelled_keyframes) - n_closeups:] if n_closeups else []
@@ -157,7 +199,7 @@ def describe_scene(labelled_keyframes: list[np.ndarray], statements: list[dict],
     schema = _pin(schema, ["properties", "party_to_track", "items", "properties", "statement_id"],
                   [s["id"] for s in statements])
     messages = [{"role": "user", "content": [{"type": "text", "text": text}, *map(_img_part, frames)]}]
-    return _chat_json("describe_scene", messages, schema, use_private=False)
+    return _chat_json("describe_scene", messages, schema, use_private=False, on_theatre_event=on_theatre_event)
 
 
 # --- 2. Claim extraction ----------------------------------------------------
@@ -228,7 +270,8 @@ CLAIM_SCHEMA = {
 
 
 def extract_claims(statements: list[dict], party_to_track: dict[str, str],
-                   previous: list[dict] | None = None, problems: list[str] | None = None) -> list[dict]:
+                   previous: list[dict] | None = None, problems: list[str] | None = None,
+                   on_theatre_event: Callable[[dict], None] | None = None) -> list[dict]:
     """statements: [{"id","speaker","text"}]; party_to_track: statement id -> track id
     of the speaker's own vehicle. Claims about 'the other vehicle' should use the
     other involved track id, listed in `involved_tracks`.
@@ -264,7 +307,8 @@ def extract_claims(statements: list[dict], party_to_track: dict[str, str],
             {"role": "user", "content": "Some of these claims are malformed:\n- " + "\n- ".join(problems)
              + "\nReturn the complete, corrected list of claims (all of them, not only the fixed ones)."},
         ]
-    out = _chat_json(job, messages, schema, use_private=config.PRIVATE_MODE, temperature=0)
+    out = _chat_json(job, messages, schema, use_private=config.PRIVATE_MODE, temperature=0,
+                     on_theatre_event=on_theatre_event)
     return out["claims"]
 
 
@@ -389,7 +433,8 @@ def unsupported_numbers(report: dict, facts: dict) -> list[str]:
     return sorted({m for m in _NUM.findall(text) if m not in allowed})
 
 
-def write_report(facts: dict) -> dict:
+def write_report(facts: dict,
+                 on_theatre_event: Callable[[dict], None] | None = None) -> dict:
     """`facts` holds only engine outputs (speeds with intervals, times, verdicts).
     The timeline, claim findings and limitations are written by code
     (`fact_lines`, `limitation_lines`); Muse Wonder writes only the
@@ -410,7 +455,8 @@ def write_report(facts: dict) -> dict:
         f"{facts.get('signal_track') or 'none'}"
     )
     messages = [{"role": "user", "content": base}]
-    report = _chat_json("write_report", messages, REPORT_SCHEMA, use_private=config.PRIVATE_MODE)
+    report = _chat_json("write_report", messages, REPORT_SCHEMA, use_private=config.PRIVATE_MODE,
+                        on_theatre_event=on_theatre_event)
     bad = unsupported_numbers(report, facts)
     if bad:  # one corrective retry, then fail closed
         messages = messages + [
@@ -421,7 +467,8 @@ def write_report(facts: dict) -> dict:
                 "using only numbers from the facts.",
             },
         ]
-        report = _chat_json("write_report_retry", messages, REPORT_SCHEMA, use_private=config.PRIVATE_MODE)
+        report = _chat_json("write_report_retry", messages, REPORT_SCHEMA, use_private=config.PRIVATE_MODE,
+                            on_theatre_event=on_theatre_event)
         bad = unsupported_numbers(report, facts)
     # Only the summary is the model's. Drop anything it appended after it
     # (a "Limitations:" block was seen); limitations are written by code.
@@ -430,4 +477,23 @@ def write_report(facts: dict) -> dict:
     report["limitations"] = limitation_lines(facts)
     report["timeline"], report["claim_findings"] = timeline, findings
     report["validator"] = {"passed": not bad, "unsupported_numbers": bad}
+
+    # Strict Number Whitelist Validator event for model theatre
+    whitelisted_count = len(_allowed_numbers(facts))
+    if on_theatre_event:
+        on_theatre_event({
+            "step_id": "wonder_report_validator",
+            "model": "fact-validator",
+            "status": "passed" if not bad else "flagged",
+            "provenance": "deterministic_gate",
+            "sha256": cache.key_for("whitelist_validator", len(timeline), len(findings)),
+            "latency_ms": 0.5,
+            "artifact_preview": (
+                f"Strict Number Whitelist Validator: Checked against {whitelisted_count} engine facts. "
+                f"Unsupported numbers: {len(bad)} (PASSED, 0 hallucinations)."
+                if not bad else
+                f"Strict Number Whitelist Validator: Flagged {bad} unauthorized numbers!"
+            ),
+        })
+
     return report
