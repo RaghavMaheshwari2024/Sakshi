@@ -244,9 +244,11 @@ def match_parties(wonder, keyframes: list, closeups: list[str], statements: list
     user wins. Returns (scene, party)."""
     scene = wonder.describe_scene(keyframes, statements, shown_ids, involved=involved,
                                   n_closeups=len(closeups), near_miss=near_miss)
-    progress("scene", {"suggested": scene["party_to_track"]})
-    if party:
+    if party:  # the user has chosen: show that, not what the model would have said
+        progress("scene", {"suggested": [{"statement_id": sid, "track_id": tid, "reason": "Your assignment."}
+                                         for sid, tid in party.items()]})
         return scene, party
+    progress("scene", {"suggested": scene["party_to_track"]})
     sids = [s["id"] for s in statements]
     party = {p["statement_id"]: p["track_id"] for p in scene["party_to_track"]}
     party, notes = check_party(party, sids, involved)
@@ -525,7 +527,8 @@ def run(case_dir: Path, progress: Progress = _noop, tracks_override: list[dict] 
             tr = voice.transcribe(case_dir / s["audio"], languages=inp.get("languages"))
             s = {**s, "text": tr.get("transcript", ""), "transcribed": True}
         statements.append({k: s[k] for k in ("id", "speaker", "text") if k in s} | {"transcribed": s.get("transcribed", False)})
-    progress("statements", {"n": len(statements)})
+    progress("statements", {"n": len(statements),
+                            "items": [{"id": st["id"], "speaker": st.get("speaker", st["id"])} for st in statements]})
 
     scene = None
     party = inp.get("party_to_track")

@@ -116,7 +116,36 @@ def test_drivers_are_not_forced_onto_a_near_miss_pair():
     assert party == {} and w.calls == 1
 
 
+def test_a_users_assignment_comes_back_on_the_rerun():
+    seen = []
+    st = [{"id": "s1", "speaker": "A", "text": "x"}]
+    _, party = match_parties(NoMatch(), [0], [], st, ["a"], [], False, {"s1": "a"}, lambda *e: seen.append(e))
+    assert party == {"s1": "a"} and seen[0][1]["suggested"][0]["track_id"] == "a"
+
+
 def test_momentum_without_data_is_not_called_unbalanced():
     text = " ".join(limitation_lines({"clock_method": "x", "impact": {"t": 1},
                                       "momentum_check": {"status": "insufficient_data"}, "signal_changes": [1]}))
     assert "could not be run" in text and "did not balance" not in text
+
+
+def test_the_run_announces_statements_so_they_can_be_assigned_without_a_suggestion(tmp_path):
+    """The UI lists statements for assignment from this event: Wonder may suggest nothing."""
+    import json
+    import shutil
+    from pathlib import Path
+
+    from sakshi.pipeline import run
+    from sakshi.engine.uncertainty import MCConfig
+
+    src = Path(__file__).parent.parent / "ui/public/scenarios/base"
+    case = json.loads((src / "case.json").read_text())
+    shutil.copy(src / "input.mp4", tmp_path)
+    cal = case["calibration"]
+    (tmp_path / "case_input.json").write_text(json.dumps({
+        "statements": [{"id": "s1", "speaker": "Driver", "text": "I was slow."}],
+        "calibration": {"image_pts": cal["image_pts"], "ground_pts_m": cal["ground_pts_m"]}}))
+    seen = {}
+    run(tmp_path, progress=lambda stage, data: seen.update({stage: data}), tracks_override=case["tracks"], mc=MCConfig(n=2))
+    assert seen["statements"]["items"] == [{"id": "s1", "speaker": "Driver"}]
+    assert "car-0" in seen["tracking"]["views"]
