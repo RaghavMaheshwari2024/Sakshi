@@ -1,0 +1,484 @@
+{
+ "default": "base",
+ "scenarios": [
+  {
+   "id": "base",
+   "group": "Crash types",
+   "title": "Side impact, clear day",
+   "description": "White car at 50 km/h hits a blue car crossing at 30 km/h",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.16,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-0",
+     "error_pct": 7.65,
+     "in90_pct": 83.3
+    },
+    "B": {
+     "track": "car-1",
+     "error_pct": 9.95,
+     "in90_pct": 66.7
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "slow",
+   "group": "Crash types",
+   "title": "Low speeds",
+   "description": "25 vs 15 km/h",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.36,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "B": {
+     "track": "car-0",
+     "error_pct": 11.76,
+     "in90_pct": 66.7
+    },
+    "A": {
+     "track": "car-1",
+     "error_pct": 10.49,
+     "in90_pct": 81.0
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "fast",
+   "group": "Crash types",
+   "title": "High speeds",
+   "description": "80 vs 40 km/h",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.08,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "B": {
+     "track": "car-0",
+     "error_pct": 7.12,
+     "in90_pct": 88.1
+    },
+    "A": {
+     "track": "car-1",
+     "error_pct": 6.77,
+     "in90_pct": 81.0
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "braking",
+   "group": "Crash types",
+   "title": "Braking before impact",
+   "description": "White car brakes hard from 65 km/h 1.5 s before the hit",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.12,
+   "claims": 5,
+   "claims_correct": "5/5",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 2,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "B": {
+     "track": "car-0",
+     "error_pct": 8.75,
+     "in90_pct": 69.8
+    },
+    "A": {
+     "track": "car-1",
+     "error_pct": 6.35,
+     "in90_pct": 95.3
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "rear_end",
+   "group": "Crash types",
+   "title": "Rear-end",
+   "description": "White car at 50 km/h runs into a car doing 20 km/h ahead",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": 0.0,
+   "claims": 3,
+   "claims_correct": "3/3",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1
+   },
+   "vehicles": {
+    "B": {
+     "track": "car-0",
+     "error_pct": 8.78,
+     "in90_pct": 88.1
+    },
+    "A": {
+     "track": "car-1",
+     "error_pct": 8.08,
+     "in90_pct": 76.2
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "near_miss",
+   "group": "Crash types",
+   "title": "Near miss",
+   "description": "The blue car clears the junction 1 s before the white car: no impact",
+   "camera_mode": "fixed",
+   "impact": false,
+   "impact_outcome": "correct: no impact",
+   "impact_error_s": null,
+   "claims": 3,
+   "claims_correct": "3/3",
+   "verdicts": {
+    "consistent": 1,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "B": {
+     "track": "car-0",
+     "error_pct": 4.67,
+     "in90_pct": 58.1
+    },
+    "A": {
+     "track": "car-1",
+     "error_pct": 1.85,
+     "in90_pct": 88.4
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "motorcycle",
+   "group": "Crash types",
+   "title": "Car hits a scooter",
+   "description": "Two-wheeler at 35 km/h",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.08,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-0",
+     "error_pct": 8.31,
+     "in90_pct": 73.8
+    },
+    "B": {
+     "track": "motorcycle-0",
+     "error_pct": 13.35,
+     "in90_pct": 54.5
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "night",
+   "group": "Conditions",
+   "title": "Night",
+   "description": "The base crash at night, headlights on",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.12,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-0",
+     "error_pct": 8.79,
+     "in90_pct": 69.0
+    },
+    "B": {
+     "track": "car-1",
+     "error_pct": 9.62,
+     "in90_pct": 88.1
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "rain",
+   "group": "Conditions",
+   "title": "Heavy rain",
+   "description": "The base crash in heavy rain",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.12,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "B": {
+     "track": "car-0",
+     "error_pct": 9.09,
+     "in90_pct": 76.2
+    },
+    "A": {
+     "track": "car-1",
+     "error_pct": 6.47,
+     "in90_pct": 88.1
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "traffic",
+   "group": "Conditions",
+   "title": "Busy junction",
+   "description": "8 other cars driving around",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.12,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-2",
+     "error_pct": 7.62,
+     "in90_pct": 85.7
+    },
+    "B": {
+     "track": "car-3",
+     "error_pct": 9.06,
+     "in90_pct": 76.2
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "junction2",
+   "group": "Conditions",
+   "title": "Another junction",
+   "description": "A different junction and approach pair",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.12,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-0",
+     "error_pct": 8.93,
+     "in90_pct": 64.3
+    },
+    "B": {
+     "track": "car-1",
+     "error_pct": 11.65,
+     "in90_pct": 61.9
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "high_camera",
+   "group": "Conditions",
+   "title": "High, distant camera",
+   "description": "Camera 18 m up and 25 m beyond the junction",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.08,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "B": {
+     "track": "car-0",
+     "error_pct": 9.59,
+     "in90_pct": 64.3
+    },
+    "A": {
+     "track": "car-1",
+     "error_pct": 5.93,
+     "in90_pct": 100.0
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "low_res",
+   "group": "Footage quality",
+   "title": "Low resolution",
+   "description": "640x360 with heavy compression",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.12,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-0",
+     "error_pct": 7.51,
+     "in90_pct": 81.0
+    },
+    "B": {
+     "track": "car-1",
+     "error_pct": 11.06,
+     "in90_pct": 76.2
+    }
+   },
+   "frames": 181
+  },
+  {
+   "id": "heavy_drops",
+   "group": "Footage quality",
+   "title": "25% frames dropped",
+   "description": "A quarter of the frames lost by the recorder",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.12,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-0",
+     "error_pct": 6.15,
+     "in90_pct": 97.5
+    },
+    "B": {
+     "track": "car-1",
+     "error_pct": 7.17,
+     "in90_pct": 82.5
+    }
+   },
+   "frames": 159
+  },
+  {
+   "id": "no_drops",
+   "group": "Footage quality",
+   "title": "Clean footage",
+   "description": "No dropped or duplicated frames",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.16,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-0",
+     "error_pct": 6.34,
+     "in90_pct": 35.4
+    },
+    "B": {
+     "track": "car-1",
+     "error_pct": 1.47,
+     "in90_pct": 100.0
+    }
+   },
+   "frames": 200
+  },
+  {
+   "id": "no_clock",
+   "group": "Footage quality",
+   "title": "No burned-in clock",
+   "description": "No on-screen clock to recover dropped frames",
+   "camera_mode": "fixed",
+   "impact": true,
+   "impact_outcome": "detected",
+   "impact_error_s": -0.12,
+   "claims": 4,
+   "claims_correct": "4/4",
+   "verdicts": {
+    "consistent": 2,
+    "inconsistent": 1,
+    "cant_tell": 1
+   },
+   "vehicles": {
+    "A": {
+     "track": "car-0",
+     "error_pct": 12.2,
+     "in90_pct": 71.4
+    },
+    "B": {
+     "track": "car-1",
+     "error_pct": 14.81,
+     "in90_pct": 57.1
+    }
+   },
+   "frames": 181
+  }
+ ]
+}

@@ -4,7 +4,9 @@ Endpoints the UI uses:
   GET  /cases                      case list for the home screen (id, status, camera_mode)
   POST /cases                      multipart: video, statements_json, audio files, camera_mode
   GET  /cases/{id}/frame/{i}.jpg   a frame, for the calibration screen
-  POST /cases/{id}/calibration     JSON: image_pts, ground_pts_m, stop_line_m, clock_box_px,
+  GET  /cases/calibration-presets      road-marking rectangles with assumed sizes
+  POST /cases/{id}/calibration     JSON: method (manual|preset|satellite), image_pts, then
+                                   ground_pts_m | preset | geo_pts + map_zoom; stop_line_m, clock_box_px,
                                    signal_light_px (the clicked signal head that governs the stop line)
   POST /cases/{id}/party           JSON: {"s1": "car-0", ...} (user confirms who drove what)
   GET  /cases/{id}/run             server-sent events: one per pipeline stage, then "done"
@@ -33,8 +35,9 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv()  # before sakshi.config reads the environment
 
 from sakshi.config import CASES_DIR  # noqa: E402
+from sakshi.engine import calib_sources  # noqa: E402
 from sakshi.pipeline import run  # noqa: E402
-from sakshi.video import find_input_video, read_frames  # noqa: E402
+from sakshi.video import find_input_video, probe, read_frames  # noqa: E402
 
 app = FastAPI(title="Sakshi")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -110,24 +113,30 @@ def frame(case_id: str, i: int):
     return Response(cv2.imencode(".jpg", f)[1].tobytes(), media_type="image/jpeg")
 
 
+@app.get("/cases/calibration-presets")
+def calibration_presets():
+    return calib_sources.PRESETS
+
+
 @app.post("/cases/{case_id}/calibration")
 def calibration(case_id: str, body: dict):
-    from sakshi.engine import homography
-
     d = _case(case_id)
     try:
-        cal = homography.fit(body["image_pts"], body["ground_pts_m"])
-    except (KeyError, ValueError) as exc:  # tell the UI what is wrong with the clicks
+        cal = calib_sources.resolve(body)
+    except (KeyError, TypeError, ValueError) as exc:  # tell the UI what is wrong with the clicks
         raise HTTPException(400, f"calibration rejected: {exc}") from exc
     line = body.get("stop_line_m")
     if line and (len(line) != 2 or
                  ((line[0][0] - line[1][0]) ** 2 + (line[0][1] - line[1][1]) ** 2) ** 0.5 < 0.5):
         raise HTTPException(400, "stop line needs two points at least 0.5 m apart")
     inp = _inp(d)
-    inp["calibration"] = body
+    inp["calibration"] = body | {"ground_pts_m": cal.ground_pts.tolist()}  # what the road was taken to be
     (d / "case_input.json").write_text(json.dumps(inp, indent=1))
     (d / "case.json").unlink(missing_ok=True)  # inputs changed: the old result is stale
-    return {"reproj_rms_m": cal.rms_err_m, "reproj_max_m": cal.max_err_m, "H": cal.H.tolist()}
+    info = probe(_video(d))
+    return {"reproj_rms_m": cal.rms_err_m, "reproj_max_m": cal.max_err_m, "H": cal.H.tolist(),
+            "ground_pts_m": cal.ground_pts.tolist(), "ground_model": cal.ground_model,
+            "warnings": calib_sources.warnings(cal, info.width, info.height)}
 
 
 @app.post("/cases/{case_id}/party")

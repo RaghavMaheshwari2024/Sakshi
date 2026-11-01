@@ -14,6 +14,8 @@ from .uncertainty import TrackResult
 SPEED_TOLERANCE = 0.10
 
 
+MIN_USEFUL_SPAN_KMH = 10.0  # intervals wider than this and than the speed itself settle nothing
+
 COLOUR = {"yellow": "amber", "orange": "amber", "amber": "amber", "red": "red", "green": "green"}
 
 
@@ -22,8 +24,8 @@ def _speed_window(claim: dict, res: TrackResult, impact_t: float | None, cross_t
     if when == "at_stop_line":
         # Never fall back to the pre-impact window: that is a different moment.
         return events.window_speed(res, cross_t - 0.2, cross_t + 0.2) if cross_t is not None else None
-    if impact_t is None:
-        return None
+    if impact_t is None:  # no event to measure against: the track's clearest stretch
+        return events.clearest_second(res) if when == "unspecified" else None
     if when == "at_impact":
         return events.window_speed(res, impact_t - 0.25, impact_t - 0.05)
     # just_before_impact / unspecified: the second before contact
@@ -137,17 +139,26 @@ def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
         near_miss = ref_t is None and ctx.get("closest_t") is not None
         if near_miss:  # no impact: judge the speed around the closest approach
             ref_t = ctx["closest_t"]
-        w = _speed_window(claim, res, ref_t, cross_t)
+        # A moment between two other road users says nothing about when this one is judged.
+        outsider = claim["subject_track"] not in ctx.get("moment_tracks", [claim["subject_track"]])
+        w = _speed_window(claim, res, None if near_miss and outsider else ref_t, cross_t)
+        near_miss = near_miss and not outsider
         if w is None:
             out["reason"] = "no measurement at the time the claim refers to"
             return out
         lo_c, hi_c = v * (1 - SPEED_TOLERANCE), v * (1 + SPEED_TOLERANCE)
         out["measured"] = w
+        too_wide = w["hi90"] - w["lo90"] > max(MIN_USEFUL_SPAN_KMH, w["kmh"])
         if hi_c < w["lo90"] or lo_c > w["hi90"]:
             out["verdict"] = "inconsistent"
             out["reason"] = (
                 f"claimed about {v:g} km/h; measured {w['kmh']} km/h "
                 f"(90% interval {w['lo90']} to {w['hi90']})"
+            )
+        elif too_wide:  # a range this wide would agree with almost any claim
+            out["reason"] = (
+                f"measured {w['kmh']} km/h, but the 90% interval {w['lo90']} to {w['hi90']} is too wide "
+                f"to support or contradict about {v:g} km/h"
             )
         else:
             out["verdict"] = "consistent"

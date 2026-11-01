@@ -316,11 +316,11 @@ CLOCK_WORDS = {
                           "placed using the vehicles' own motion.",
     "clock_ticks": "Frame times come from the burned-in clock; where dropped frames fall within each "
                    "second is not known, which the speed intervals include.",
-    "container_pts": "Frame times come from the video file's own timestamps (no burned-in clock).",
-    "container_pts_even": "No burned-in clock and evenly spaced file timestamps: frames the recorder "
+    "container_pts": "Frame times come from the video file's own timestamps (no burned-in clock could be used).",
+    "container_pts_even": "No burned-in clock could be used, and the file's timestamps are evenly spaced: frames the recorder "
                           "dropped cannot be seen, so the speed intervals allow speeds up to about 20% "
                           "higher than the file suggests.",
-    "nominal_fps": "No burned-in clock and no usable file timestamps: frame times assume the nominal "
+    "nominal_fps": "No burned-in clock could be used and no usable file timestamps: frame times assume the nominal "
                    "frame rate, and the speed intervals allow up to about 20% dropped frames.",
 }
 
@@ -330,9 +330,16 @@ def limitation_lines(facts: dict) -> list[str]:
     model they were once invented: 'the evaluation was conducted by skilled and
     experienced personnel'. A forensic report must not contain that.)"""
     out = [CLOCK_WORDS.get(facts.get("clock_method"), f"Clock method: {facts.get('clock_method')}.")]
-    if facts.get("calibration_rms_m") is not None:
+    if facts.get("calibration_points") == 4:  # 4 points always fit: the error says nothing
+        out.append(f"Road calibration uses only {facts['calibration_points']} points, so its fit cannot be "
+                   "checked independently; positions assume a flat road.")
+    elif facts.get("calibration_rms_m") is not None:
         out.append(f"Road calibration error: {facts['calibration_rms_m']} m (how well the clicked road "
                    "points fit a flat road); positions assume a flat road.")
+    if facts.get("calibration_basis"):
+        out.append(f"Calibration basis: {facts['calibration_basis']}.")
+    if facts.get("party_assigned_by_person"):
+        out.append("A person assigned the statements to vehicles; the footage does not show who was driving.")
     if not facts.get("impact"):
         ca = facts.get("closest_approach")
         out.append("No impact found in the footage" + (
@@ -340,7 +347,9 @@ def limitation_lines(facts: dict) -> list[str]:
             if ca else "."))
     else:
         status = (facts.get("momentum_check") or {}).get("status")
-        if status and status != "consistent":
+        if status == "insufficient_data":
+            out.append("The momentum check could not be run: too little motion was measured around the impact.")
+        elif status and status != "consistent":
             out.append("The momentum check after the impact did not balance (" + status + "): after contact "
                        "the vehicles overlap in the image, so post-impact motion is not reliable. Speeds "
                        "before the impact are measured separately and are not affected.")

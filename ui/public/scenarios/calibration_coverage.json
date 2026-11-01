@@ -1,0 +1,97 @@
+{
+ "scenarios": 16,
+ "samples": 100,
+ "click_px": 2.0,
+ "note": "Last 2 s before impact or closest approach; true sizes off by 0, 1 and 2 sigma from the preset.",
+ "presets": {
+  "lane_zebra": {
+   "label": "Lane width + zebra crossing width",
+   "width_m": 3.5,
+   "length_m": 3.0,
+   "sigma_width_m": 0.25,
+   "sigma_length_m": 0.5
+  },
+  "lane_stop_line": {
+   "label": "Lane width + stop-line distance",
+   "width_m": 3.5,
+   "length_m": 6.0,
+   "sigma_width_m": 0.25,
+   "sigma_length_m": 1.0
+  },
+  "two_lanes_long": {
+   "label": "Two-lane road + 12 m stretch",
+   "width_m": 7.0,
+   "length_m": 12.0,
+   "sigma_width_m": 0.5,
+   "sigma_length_m": 1.5
+  }
+ },
+ "results": {
+  "surveyed": {
+   "frames": 1344,
+   "mae_kmh": 3.49,
+   "coverage_pct": 59.2,
+   "median_span_kmh": 5.7
+  },
+  "satellite": {
+   "frames": 1344,
+   "mae_kmh": 4.39,
+   "coverage_pct": 69.0,
+   "median_span_kmh": 8.4
+  },
+  "lane_zebra/0sigma": {
+   "frames": 1344,
+   "mae_kmh": 13.38,
+   "coverage_pct": 96.8,
+   "median_span_kmh": 115.0
+  },
+  "lane_zebra/1sigma": {
+   "frames": 1344,
+   "mae_kmh": 13.58,
+   "coverage_pct": 95.5,
+   "median_span_kmh": 86.0
+  },
+  "lane_zebra/2sigma": {
+   "frames": 1344,
+   "mae_kmh": 22.31,
+   "coverage_pct": 93.0,
+   "median_span_kmh": 141.2
+  },
+  "lane_stop_line/0sigma": {
+   "frames": 1344,
+   "mae_kmh": 14.99,
+   "coverage_pct": 96.3,
+   "median_span_kmh": 58.8
+  },
+  "lane_stop_line/1sigma": {
+   "frames": 1344,
+   "mae_kmh": 14.13,
+   "coverage_pct": 89.9,
+   "median_span_kmh": 61.1
+  },
+  "lane_stop_line/2sigma": {
+   "frames": 1344,
+   "mae_kmh": 20.41,
+   "coverage_pct": 90.0,
+   "median_span_kmh": 93.0
+  },
+  "two_lanes_long/0sigma": {
+   "frames": 1344,
+   "mae_kmh": 4.77,
+   "coverage_pct": 90.8,
+   "median_span_kmh": 21.9
+  },
+  "two_lanes_long/1sigma": {
+   "frames": 1344,
+   "mae_kmh": 5.78,
+   "coverage_pct": 85.4,
+   "median_span_kmh": 22.2
+  },
+  "two_lanes_long/2sigma": {
+   "frames": 1344,
+   "mae_kmh": 9.94,
+   "coverage_pct": 59.4,
+   "median_span_kmh": 19.4
+  }
+ }
+}

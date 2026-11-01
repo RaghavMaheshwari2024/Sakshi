@@ -266,3 +266,26 @@ def test_report_limitations_are_written_by_code(monkeypatch):
     text = " ".join(r["limitations"])
     assert "closest approach" in text and "Traffic-light claims cannot be checked" in text
     assert r["validator"]["passed"]
+
+
+def test_camera_pose_recovered_from_calibration():
+    # A CARLA-like camera: 11 m up, 15 m / -8 m from the junction, 90 deg FOV,
+    # 960x540. Project road points, fit H, recover the camera.
+    import math
+
+    from sakshi.engine import homography as hg
+
+    W, Hh, fov = 960, 540, 90.0
+    f = W / (2 * math.tan(math.radians(fov) / 2))
+    C = np.array([15.0, -8.0, 11.0])
+    fwd = -C / np.linalg.norm(C)  # looks at the origin
+    right = np.cross(fwd, [0, 0, 1.0]); right /= np.linalg.norm(right)
+    up = np.cross(right, fwd)
+    pts = np.array([[x, y, 0.0] for x in (-15, -5, 5) for y in (-6, 0, 6)])
+    d = pts - C
+    img = np.c_[W / 2 + f * (d @ right) / (d @ fwd), Hh / 2 - f * (d @ up) / (d @ fwd)]
+    cal = hg.fit(img, pts[:, :2])
+    pose = hg.camera_pose(cal.H, W, Hh)
+    assert abs(pose["focal_px"] - f) / f < 0.01
+    assert np.allclose(pose["position_m"], C, atol=0.05)
+    assert np.allclose(pose["look_at_m"], [0, 0], atol=0.05)
