@@ -44,6 +44,7 @@ interface RealFrame {
 }
 
 const REAL_FRAME_URL = '/overview/real_frame.jpg';
+const MESH_FADE = 'linear-gradient(to bottom, #000 55%, transparent 100%)';
 
 /** A real traffic camera frame with the masks SAM 3.1 returned for it. */
 const RealFrameExhibit: React.FC<{ frame: RealFrame }> = ({ frame }) => {
@@ -387,9 +388,10 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
           y: -36, ease: 'none',
           scrollTrigger: { trigger: hero.current, start: 'top top', end: 'bottom top', scrub: 0.6 },
         });
+        // Scrolling drives down the road: it slides, widens and dims together.
         gsap.to('.hero-road', {
-          yPercent: 12, ease: 'none',
-          scrollTrigger: { trigger: hero.current, start: 'top top', end: 'bottom top', scrub: true },
+          yPercent: 14, scale: 1.14, opacity: 0.04, transformOrigin: '50% 0%', ease: 'none',
+          scrollTrigger: { trigger: hero.current, start: 'top top', end: 'bottom 20%', scrub: 0.8 },
         });
         // The glow follows the pointer.
         const box0 = hero.current?.getBoundingClientRect();
@@ -506,16 +508,17 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
   return (
     <div ref={root} className="flex-1">
       {/* Opening */}
-      <section ref={hero} className="relative overflow-hidden border-b border-line">
-        <div className="pointer-events-none absolute inset-0" aria-hidden="true">
-          <svg className="hero-road absolute inset-x-0 bottom-0 h-[78%] w-full opacity-[0.22]" viewBox="0 0 1200 600" preserveAspectRatio="xMidYMax slice" fill="none">
+      <section ref={hero} className="relative">
+        {/* Runs past the hero and fades out, so the road dissolves into the page instead of being cut off. */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[calc(100%+60vh)] overflow-hidden" aria-hidden="true"
+             style={{ maskImage: MESH_FADE, WebkitMaskImage: MESH_FADE }}>
+          <svg className="hero-road absolute inset-x-0 top-[14%] h-[86%] w-full opacity-[0.22]" viewBox="0 0 1200 600" preserveAspectRatio="xMidYMax slice" fill="none">
             {[-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5].map((n) => (
               <path key={n} d={`M${600 + n * 22} 0 L${600 + n * 300} 600`} stroke={n === 0 ? '#f2c037' : '#edeae3'} strokeWidth={n === 0 ? 1.4 : 0.7} strokeDasharray={n === 0 ? '14 12' : undefined} />
             ))}
             {[60, 130, 215, 320, 445, 590].map((y) => <path key={y} d={`M0 ${y} H1200`} stroke="#edeae3" strokeWidth={0.5} opacity={y / 900} />)}
           </svg>
-          <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-asphalt-950 to-transparent" />
-          <div className="absolute inset-x-0 top-0 h-[42%] bg-gradient-to-b from-asphalt-950 to-transparent" />
+          <div className="absolute inset-x-0 top-0 h-[30%] bg-gradient-to-b from-asphalt-950 to-transparent" />
           <div className="hero-glow absolute left-0 top-0 -ml-[260px] -mt-[260px] h-[520px] w-[520px] rounded-full bg-paint/[0.09] blur-[90px]" />
         </div>
         <div className="relative mx-auto grid max-w-[1320px] items-center gap-10 px-4 py-14 sm:px-6 lg:min-h-[calc(100dvh-53px)] lg:grid-cols-[minmax(0,1.14fr)_minmax(0,1fr)] lg:gap-14 lg:py-12">
@@ -565,7 +568,7 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
       </section>
 
       {/* The problem */}
-      <section className="border-b border-line">
+      <section className="relative z-10 border-b border-line">
         <div className="mx-auto max-w-page px-4 py-20 sm:px-6">
           <div className="grid gap-10 lg:grid-cols-[1fr_1.1fr] lg:gap-14">
             <div>
@@ -620,8 +623,8 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
               <AnswerCard data={data} />
             </div>
           ) : <div className="mt-10 h-96 animate-pulse rounded-lg bg-asphalt-850" />}
-          <p data-reveal className="mt-8 max-w-3xl text-[15px] leading-relaxed text-bone-200">
-            Sakshi doesn’t replace an expert. It’s for the person holding a clip without an analyst nearby: a first answer that shows its working and its doubt, ready for an expert to check.
+          <p data-reveal className="mt-8 text-[15px] leading-relaxed text-bone-200">
+            Sakshi doesn’t replace an expert: it gives anyone with a clip a first answer that shows its working and its doubt.
           </p>
         </div>
       </section>
