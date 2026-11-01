@@ -144,8 +144,8 @@ const roadFragment = /* glsl */ `
     vec3 p = Hinv * vec3(vGround, 1.0);
     // Graph paper: 1 m squares, a bold line every 5 m.
     float minor = gridLine(vGround, 1.0) * 0.5, major = gridLine(vGround, 5.0);
-    vec3 paper = vec3(0.045, 0.05, 0.06);
-    vec3 ink = vec3(0.32, 0.78, 0.88);
+    vec3 paper = vec3(0.058, 0.062, 0.07);
+    vec3 ink = vec3(0.95, 0.75, 0.22);
     vec3 offImage = paper + ink * (minor * 0.10 + major * 0.28);
     if (p.z <= 0.0) { gl_FragColor = vec4(offImage, 1.0); return; }
     vec2 uv = p.xy / p.z / imgSize;
@@ -253,16 +253,16 @@ function Vehicle({ tr, concept, name, s, t, cam, lift, compact }: {
       </group>
       <Html position={toWorld(cx, cy, s, Hh + lift)} center zIndexRange={[20, 0]}>
         {compact ? (
-          <div className="pointer-events-none select-none whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-white"
+          <div className="pointer-events-none select-none whitespace-nowrap rounded border px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-bone"
                style={{ background: 'rgba(9,9,11,0.8)', borderColor: colour }}>
             {st.kmh.toFixed(0)} km/h
           </div>
         ) : (
-          <div className="pointer-events-none select-none whitespace-nowrap rounded-md border px-2 py-1 text-center shadow-lg"
+          <div className="pointer-events-none select-none whitespace-nowrap rounded border px-2 py-1 text-center"
                style={{ background: 'rgba(9,9,11,0.82)', borderColor: colour }}>
             <div className="text-[11px] font-medium capitalize" style={{ color: colour }}>{name}</div>
-            <div className="text-[15px] font-semibold text-white tabular-nums">{st.kmh.toFixed(1)} km/h</div>
-            <div className="text-[10px] text-zinc-400 tabular-nums">90%: {st.lo.toFixed(1)} to {st.hi.toFixed(1)}</div>
+            <div className="font-mono text-[15px] text-bone tabular-nums">{st.kmh.toFixed(1)} km/h</div>
+            <div className="text-[10px] text-bone-400 tabular-nums">90%: {st.lo.toFixed(1)} to {st.hi.toFixed(1)}</div>
           </div>
         )}
       </Html>
@@ -278,11 +278,11 @@ function ImpactRing({ xy, tImpact, t, s }: { xy: Vec2; tImpact: number; t: numbe
     <group position={toWorld(xy[0], xy[1], s, 0.08)} rotation={[-Math.PI / 2, 0, 0]}>
       <mesh>
         <ringGeometry args={[r, r + 0.35, 64]} />
-        <meshBasicMaterial color="#f43f5e" transparent opacity={op} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#ef5a4c" transparent opacity={op} side={THREE.DoubleSide} />
       </mesh>
       <mesh>
         <circleGeometry args={[0.9, 32]} />
-        <meshBasicMaterial color="#f43f5e" transparent opacity={0.5 * op} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#ef5a4c" transparent opacity={0.5 * op} side={THREE.DoubleSide} />
       </mesh>
     </group>
   );
@@ -355,24 +355,24 @@ function ClaimGhost({ tr, g, concept, s, t, tImpact, compact }: {
       <group position={toWorld(p.x, p.y, s, Hh / 2)} rotation={[0, yaw, 0]}>
         <lineSegments>
           <edgesGeometry args={[new THREE.BoxGeometry(L, Hh, W)]} />
-          <lineBasicMaterial color="#e4e4e7" transparent opacity={0.85} />
+          <lineBasicMaterial color="#edeae3" transparent opacity={0.85} />
         </lineSegments>
         <mesh>
           <boxGeometry args={[L, Hh, W]} />
-          <meshBasicMaterial color="#e4e4e7" transparent opacity={0.08} depthWrite={false} />
+          <meshBasicMaterial color="#edeae3" transparent opacity={0.08} depthWrite={false} />
         </mesh>
       </group>
       <Html position={toWorld(p.x, p.y, s, Hh + 1.4)} center zIndexRange={[19, 0]}>
-        <div className="pointer-events-none whitespace-nowrap rounded border border-dashed border-zinc-400 bg-zinc-950/80 px-2 py-0.5 text-[11px] text-zinc-200">
+        <div className="pointer-events-none whitespace-nowrap rounded border border-dashed border-bone-400 bg-asphalt-950/80 px-2 py-0.5 text-[11px] text-bone">
           {compact ? `${g.sid} claim: ${g.kmh}` : `If ${g.sid}'s claim were true: ${g.kmh} km/h`}
         </div>
       </Html>
       {gapLine && gap > 0.5 && (
         <>
-          <Line points={gapLine} color="#e4e4e7" lineWidth={2} dashed dashSize={0.6} gapSize={0.4} />
-          <Html position={gapLine[0].clone().lerp(gapLine[1], 0.6).setY(0.6)} center zIndexRange={[18, 0]}
-                style={{ transform: 'translateY(18px)' }}>
-            <div className="pointer-events-none whitespace-nowrap rounded bg-rose-500/90 px-2 py-0.5 text-[12px] font-semibold text-white">
+          <Line points={gapLine} color="#edeae3" lineWidth={2} dashed dashSize={0.6} gapSize={0.4} />
+          <Html position={gapLine[0].clone().lerp(gapLine[1], 0.3).setY(0.6)} center zIndexRange={[18, 0]}
+                style={{ transform: 'translateY(26px)' }}>
+            <div className="pointer-events-none whitespace-nowrap rounded bg-signal-red px-2 py-0.5 text-[12px] font-semibold text-white">
               {compact ? `${gap.toFixed(1)} m back` : `${gap.toFixed(1)} m further back at the impact`}
             </div>
           </Html>
@@ -466,8 +466,22 @@ export const Replay3D: React.FC<Replay3DProps> = ({ initialMode = 'camera', embe
   }, [currentFrame, isPlaying, data, video]);
   useEffect(() => {
     video.playbackRate = playbackSpeed;
-    if (isPlaying) video.play().catch(() => setIsPlaying(false));
-    else video.pause();
+    if (!isPlaying) {
+      video.pause();
+      return;
+    }
+    const start = () => { video.play().catch(() => setIsPlaying(false)); };
+    if (!video.seeking) {
+      start();
+      return;
+    }
+    // Wait for a seek in flight to land, with a backstop in case it never does.
+    video.addEventListener('seeked', start, { once: true });
+    const watchdog = window.setTimeout(start, 600);
+    return () => {
+      video.removeEventListener('seeked', start);
+      window.clearTimeout(watchdog);
+    };
   }, [isPlaying, playbackSpeed, video, setIsPlaying]);
   useEffect(() => {
     if (!data || !isPlaying || embedded) return;
@@ -534,10 +548,10 @@ export const Replay3D: React.FC<Replay3DProps> = ({ initialMode = 'camera', embe
   const modes: [Mode, string][] = embedded ? [['top', 'Top'], ['3d', '3D']] : [['camera', 'Camera'], ['3d', '3D replay'], ['top', 'Top']];
 
   return (
-    <div className="relative h-full w-full min-h-[300px] overflow-hidden rounded-lg bg-zinc-950">
+    <div className="relative h-full w-full min-h-[220px] overflow-hidden bg-asphalt-950">
       <Canvas camera={{ position: poses[initialMode].pos.toArray(), fov: poses[initialMode].fov, near: 0.5, far: 2000 }} dpr={[1, 2]}>
-        <color attach="background" args={['#09090b']} />
-        <fog attach="fog" args={['#09090b', 120, 320]} />
+        <color attach="background" args={['#0a0b0c']} />
+        <fog attach="fog" args={['#0a0b0c', 120, 320]} />
         <ambientLight intensity={0.7} />
         <directionalLight position={[30, 60, 20]} intensity={1.1} />
         <RoadSurface data={data} video={video} s={s} bounds={bounds} grid={grid} />
@@ -564,35 +578,39 @@ export const Replay3D: React.FC<Replay3DProps> = ({ initialMode = 'camera', embe
         <div ref={overlayRef} className="pointer-events-none absolute inset-0 transition-opacity duration-700" style={{ opacity: overlayOpacity }} />
       )}
 
-      <div className="absolute right-3 top-3 flex items-center gap-2 text-xs">
+      <div className="absolute right-2 top-2 flex items-center gap-1 rounded bg-asphalt-900/90 p-0.5 text-[12px]">
         {mode !== 'camera' && (
           <>
             <button onClick={() => setGhosts(!ghosts)} disabled={!ghostList.length}
-                    className={`rounded-full border px-3 py-1.5 ${ghosts && ghostList.length ? 'border-zinc-300 text-zinc-100' : 'border-zinc-700 text-zinc-500'}`}>
+                    title="A wire-frame of the vehicle at its claimed speed, on the same path"
+                    aria-pressed={ghosts}
+                    className={`h-6 rounded-[3px] px-2 disabled:opacity-40 ${ghosts && ghostList.length ? 'bg-asphalt-700 text-bone' : 'text-bone-400 hover:text-bone'}`}>
               {embedded ? 'Ghost' : 'Claimed-speed ghost'}
             </button>
             <button onClick={() => setGrid(!grid)}
-                    className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 ${grid ? 'border-cyan-600 text-cyan-300' : 'border-zinc-700 text-zinc-500'}`}>
+                    aria-pressed={grid}
+                    className={`flex h-6 items-center gap-1 rounded-[3px] px-2 ${grid ? 'bg-asphalt-700 text-bone' : 'text-bone-400 hover:text-bone'}`}>
               <Grid3x3 className="h-3.5 w-3.5" /> Grid
             </button>
           </>
         )}
-        <div className="flex overflow-hidden rounded-full border border-zinc-700 bg-zinc-900/90">
+        <div className="flex rounded-[3px]">
           {modes.map(([m, label]) => (
             <button key={m} onClick={() => { setSettledMode(null); setMode(m); }}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 ${mode === m ? 'bg-cyan-500/20 text-cyan-300' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                    aria-pressed={mode === m}
+                    className={`flex h-6 items-center gap-1 rounded-[3px] px-2 ${mode === m ? 'bg-paint-soft text-paint' : 'text-bone-400 hover:text-bone'}`}>
               {m === 'camera' ? <Video className="h-3.5 w-3.5" /> : m === '3d' ? <Box className="h-3.5 w-3.5" /> : <MapIcon className="h-3.5 w-3.5" />} {label}
             </button>
           ))}
         </div>
       </div>
       {mode !== 'camera' && (embedded ? (
-        <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-zinc-950/80 px-2 py-1 text-[10px] text-zinc-400">
+        <div className="pointer-events-none absolute bottom-1.5 left-2 rounded-[3px] bg-asphalt-950/80 px-1.5 py-0.5 text-[11px] text-bone-300">
           {grid ? '1 m grid, bold every 5 m' : 'grid off'}{ghosts && ghostList.length > 0 ? ' \u00b7 white frame = claimed speed' : ''}
         </div>
       ) : (
-        <div className="pointer-events-none absolute bottom-3 left-3 max-w-[78%] rounded-md bg-zinc-950/80 px-3 py-2 text-[11px] leading-snug text-zinc-400">
-          {grid && <span className="mr-1 text-cyan-300">Grid: 1 m squares, bold line every 5 m.</span>}
+        <div className="pointer-events-none absolute bottom-3 left-3 max-w-[70%] rounded bg-asphalt-950/85 px-3 py-2 text-[12px] leading-snug text-bone-300">
+          {grid && <span className="mr-1 text-paint">Grid: 1 m squares, bold line every 5 m.</span>}
           Measured positions; each vehicle is a box whose corner nearest the camera sits on its measured ground point.
           The road is the camera image projected onto the ground, so anything above the road looks stretched.
           {ghosts && ghostList.length > 0 && ' White wire-frame: where the vehicle would be at its claimed speed, on the same path.'}
@@ -614,20 +632,20 @@ export const ReplayControls: React.FC = () => {
   const imp = caseData.events?.[0];
   const n = caseData.clip.frames;
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-2 text-xs text-zinc-300">
-      <button onClick={togglePlay} className="flex items-center gap-1.5 rounded-md bg-cyan-500/20 px-3 py-1.5 text-cyan-300">
+    <div className="flex items-center gap-3 rounded border border-line bg-asphalt-900 px-3 py-2 text-[13px] text-bone-200">
+      <button onClick={togglePlay} className="flex items-center gap-1.5 rounded bg-paint px-3 py-1.5 text-asphalt-950">
         {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />} {isPlaying ? 'Pause' : 'Play'}
       </button>
       {[0.25, 0.5, 1].map((r) => (
         <button key={r} onClick={() => setPlaybackSpeed(r)}
-                className={`rounded px-2 py-1 ${playbackSpeed === r ? 'bg-zinc-700 text-white' : 'text-zinc-400'}`}>{r}x</button>
+                className={`rounded px-2 py-1 ${playbackSpeed === r ? 'bg-asphalt-700 text-bone' : 'text-bone-400'}`}>{r}x</button>
       ))}
       <div className="relative flex-1">
         <input type="range" min={0} max={n - 1} value={currentFrame} onChange={(e) => setFrame(+e.target.value)}
-               className="w-full accent-cyan-400" />
-        {imp && <div className="pointer-events-none absolute -top-1 h-4 w-0.5 bg-rose-500" style={{ left: `${(imp.i / (n - 1)) * 100}%` }} />}
+               className="w-full accent-[#f2c037]" />
+        {imp && <div className="pointer-events-none absolute -top-1 h-4 w-0.5 bg-signal-red" style={{ left: `${(imp.i / (n - 1)) * 100}%` }} />}
       </div>
-      <span className="w-24 text-right tabular-nums text-zinc-400">t = {currentTime.toFixed(2)} s</span>
+      <span className="measured w-24 text-right text-bone-400">t = {currentTime.toFixed(2)} s</span>
     </div>
   );
 };

@@ -1,232 +1,181 @@
-import React, { useEffect, useRef } from 'react';
-import { Play, Pause, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
 import { useCaseStore } from '../store/useCaseStore';
+import { IconButton, Segmented } from './ui';
+import { droppedPositions, signalChanges as readSignals } from '../utils/caseFacts';
+import { SIGNAL_COLORS } from '../utils/colors';
+import { gsap, prefersReducedMotion, useGSAP } from '../lib/motion';
 
 export const MasterTimeline: React.FC = () => {
   const {
-    caseData,
-    currentFrame,
-    currentTime,
-    isPlaying,
-    playbackSpeed,
-    highlightWindow,
-    setTime,
-    togglePlay,
-    stepFrame,
-    setPlaybackSpeed,
-    clearHighlight,
+    caseData, currentFrame, currentTime, isPlaying, playbackSpeed, highlightWindow,
+    setTime, togglePlay, stepFrame, setPlaybackSpeed, clearHighlight, toggleMasks,
   } = useCaseStore();
 
   const totalFrames = caseData?.clip?.frames || 1;
   const clockFrames = caseData?.clock?.frames || [];
-  const maxTime = clockFrames[clockFrames.length - 1]?.t || (totalFrames / (caseData?.clip?.fps_nominal || 25));
+  const maxTime = clockFrames[clockFrames.length - 1]?.t || totalFrames / (caseData?.clip?.fps_nominal || 25);
   const minTime = clockFrames[0]?.t || 0;
   const timeSpan = Math.max(0.001, maxTime - minTime);
+  const pos = (t: number) => ((t - minTime) / timeSpan) * 100;
 
-  const progressBarRef = useRef<HTMLDivElement>(null);
+  const rail = useRef<HTMLDivElement>(null);
+  const windowEl = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState(false);
 
-  // Global Keyboard shortcuts: J, K, L, Space, Arrow keys
+  // Keyboard: Space / K, J / L, arrows, M.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't hijack if user is typing in an input
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
-
-      if (e.code === 'Space' || e.key === 'k' || e.key === 'K') {
-        e.preventDefault();
-        togglePlay();
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        stepFrame(-1);
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        stepFrame(1);
-      } else if (e.key === 'j' || e.key === 'J') {
-        e.preventDefault();
-        stepFrame(-5);
-      } else if (e.key === 'l' || e.key === 'L') {
-        e.preventDefault();
-        stepFrame(5);
-      }
+      const target = e.target as HTMLElement;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // A button reached by keyboard keeps Space; one just clicked with the mouse does not,
+      // or pressing Space after "Show me" would fire it again instead of playing.
+      if (e.code === 'Space' && target?.tagName === 'BUTTON' && target.matches(':focus-visible')) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      if (e.code === 'Space' || e.key === 'k' || e.key === 'K') { e.preventDefault(); togglePlay(); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); stepFrame(-1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); stepFrame(1); }
+      else if (e.key === 'j' || e.key === 'J') { e.preventDefault(); stepFrame(-5); }
+      else if (e.key === 'l' || e.key === 'L') { e.preventDefault(); stepFrame(5); }
+      else if (e.key === 'm' || e.key === 'M') { e.preventDefault(); toggleMasks(); }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlay, stepFrame]);
+  }, [togglePlay, stepFrame, toggleMasks]);
 
-  // Click / scrub handler on progress bar
-  const handleScrub = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!progressBarRef.current) return;
-    const rect = progressBarRef.current.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const targetTime = minTime + ratio * timeSpan;
+  const scrubTo = (clientX: number) => {
+    if (!rail.current) return;
+    const rect = rail.current.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     clearHighlight();
-    setTime(targetTime);
+    setTime(minTime + ratio * timeSpan);
   };
 
+  // A claim's window sweeps open from its start, drawing the eye to where it landed.
+  useGSAP(
+    () => {
+      if (!windowEl.current || prefersReducedMotion()) return;
+      gsap.fromTo(windowEl.current, { scaleX: 0, transformOrigin: 'left center' }, { scaleX: 1, duration: 0.5 });
+    },
+    { dependencies: [highlightWindow?.t0, highlightWindow?.t1, highlightWindow?.reason] },
+  );
+
   const impactTime = caseData?.facts?.impact?.t;
-  const signalChanges = caseData?.facts?.signal_changes || [];
+  const signals = useMemo(() => (caseData ? readSignals(caseData) : []), [caseData]);
+  const drops = useMemo(() => (caseData ? droppedPositions(caseData) : []), [caseData]);
+  const inferred = caseData?.clock?.dropped_frames_inferred;
+  const sigmaMs = caseData?.clock?.median_sigma_s ? caseData.clock.median_sigma_s * 1000 : null;
 
   return (
-    <div className="h-16 border border-zinc-800 bg-zinc-950/90 rounded-lg backdrop-blur px-4 flex flex-col justify-center select-none shadow-md">
-      {/* Top track: Signal Status + Dropped Frame Indicators */}
+    <section aria-label="Timeline" className="shrink-0 select-none bg-asphalt-900 px-3 pb-2 pt-2.5">
       <div
-        ref={progressBarRef}
-        onClick={handleScrub}
-        className="relative h-4 w-full bg-zinc-950/80 rounded cursor-pointer overflow-hidden border border-zinc-800/80 mb-2 group"
+        ref={rail}
+        role="slider"
+        tabIndex={0}
+        aria-label="Playhead"
+        aria-valuemin={0}
+        aria-valuemax={totalFrames - 1}
+        aria-valuenow={currentFrame}
+        aria-valuetext={`Frame ${currentFrame}, ${currentTime.toFixed(2)} seconds`}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          setDragging(true);
+          scrubTo(e.clientX);
+        }}
+        onPointerMove={(e) => { if (dragging) scrubTo(e.clientX); }}
+        onPointerUp={() => setDragging(false)}
+        onPointerCancel={() => setDragging(false)}
+        className="relative h-6 cursor-ew-resize touch-none"
       >
-        {/* Signal state color strips */}
-        {signalChanges.map((sig, idx) => {
-          const nextSig = signalChanges[idx + 1];
-          const tStart = sig.t;
-          const tEnd = nextSig ? nextSig.t : maxTime;
-          const leftPercent = ((tStart - minTime) / timeSpan) * 100;
-          const widthPercent = ((tEnd - tStart) / timeSpan) * 100;
+        {/* Bed */}
+        <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-sm bg-asphalt-700">
+          {signals.map((sig, idx) => {
+            const end = signals[idx + 1]?.t ?? maxTime;
+            return (
+              <div key={idx} className="absolute inset-y-0 opacity-80"
+                   style={{ left: `${pos(sig.t)}%`, width: `${pos(end) - pos(sig.t)}%`, background: SIGNAL_COLORS[sig.state] }}
+                   title={`Signal ${sig.state} from t = ${sig.t.toFixed(2)} s`} />
+            );
+          })}
+        </div>
 
-          let colorBg = 'bg-zinc-800';
-          if (sig.state === 'green') colorBg = 'bg-emerald-500/30 border-r border-emerald-500/50';
-          if (sig.state === 'red') colorBg = 'bg-rose-500/30 border-r border-rose-500/50';
-          if (sig.state === 'amber') colorBg = 'bg-amber-500/30 border-r border-amber-500/50';
-
-          return (
-            <div
-              key={idx}
-              className={`absolute top-0 bottom-0 ${colorBg}`}
-              style={{ left: `${leftPercent}%`, width: `${widthPercent}%` }}
-              title={`Signal: ${sig.state} @ t=${sig.t}s`}
-            />
+        {/* Frames the recorder lost (from the clock) and frames it repeated */}
+        {drops.map(({ i, lost }) => {
+          const t = clockFrames[i]?.t;
+          return t === undefined ? null : (
+            <div key={`gap-${i}`} className="absolute bottom-0 h-1 w-px bg-signal-amber" style={{ left: `${pos(t)}%` }}
+                 title={`${lost} frame${lost > 1 ? 's' : ''} lost before frame ${i}`} />
           );
         })}
+        {clockFrames.filter((f) => f.dup).map((f) => (
+          <div key={`dup-${f.i}`} className="absolute top-0 h-1 w-px bg-bone-400" style={{ left: `${pos(f.t)}%` }}
+               title={`Duplicate frame ${f.i}`} />
+        ))}
 
-        {/* Claim Highlight Window (when "Show Me" button was clicked) */}
         {highlightWindow && (
-          <div
-            className="absolute top-0 bottom-0 bg-cyan-500/30 border-x-2 border-cyan-400 animate-pulse"
-            style={{
-              left: `${Math.max(0, ((highlightWindow.t0 - minTime) / timeSpan) * 100)}%`,
-              width: `${Math.max(1, ((highlightWindow.t1 - highlightWindow.t0) / timeSpan) * 100)}%`,
-            }}
-          />
+          <div ref={windowEl} className="absolute inset-y-0.5 rounded-sm border border-paint bg-paint-soft"
+               style={{
+                 left: `${Math.max(0, pos(highlightWindow.t0))}%`,
+                 width: `${Math.max(1, pos(Math.min(highlightWindow.t1, maxTime)) - Math.max(0, pos(highlightWindow.t0)))}%`,
+               }} />
         )}
 
-        {/* Dropped frame markers (drop-aware tick indicators) */}
-        {clockFrames.map((f) => {
-          if (!f.dup) return null;
-          const pos = ((f.t - minTime) / timeSpan) * 100;
-          return (
-            <div
-              key={`dup-${f.i}`}
-              className="absolute top-0 bottom-0 w-[1.5px] bg-amber-500/60"
-              style={{ left: `${pos}%` }}
-              title={`Duplicate frame #${f.i}`}
-            />
-          );
-        })}
-
-        {/* Collision Impact Marker */}
         {impactTime !== undefined && (
-          <div
-            className="absolute top-0 bottom-0 w-1 bg-rose-500 z-10 flex items-center justify-center"
-            style={{ left: `${((impactTime - minTime) / timeSpan) * 100}%` }}
-          >
-            <div className="w-2.5 h-2.5 rounded-full bg-rose-500 ring-2 ring-rose-950 animate-ping" />
-          </div>
+          <div className="absolute inset-y-0 w-0.5 -translate-x-1/2 bg-signal-red" style={{ left: `${pos(impactTime)}%` }}
+               title={`Impact at t = ${impactTime.toFixed(3)} s`} />
         )}
 
-        {/* Current Playhead Scrubber */}
-        <div
-          className="absolute top-0 bottom-0 w-[2px] bg-white z-20 shadow-[0_0_8px_white]"
-          style={{ left: `${((currentTime - minTime) / timeSpan) * 100}%` }}
-        >
-          <div className="w-2 h-2 -ml-[3px] -mt-[2px] rounded-full bg-white shadow" />
+        <div className="absolute inset-y-0 z-10 w-px -translate-x-1/2 bg-paint" style={{ left: `${pos(currentTime)}%` }}>
+          <div className="absolute left-1/2 top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-paint ring-2 ring-asphalt-900" />
         </div>
       </div>
 
-      {/* Bottom controls & Telemetry Readouts */}
-      <div className="flex items-center justify-between">
-        {/* Playback Buttons */}
-        <div className="flex items-center space-x-2">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="flex items-center gap-0.5">
+          <IconButton label="Step back one frame (left arrow)" onClick={() => stepFrame(-1)}><ChevronLeft className="h-4 w-4" /></IconButton>
           <button
-            onClick={() => stepFrame(-1)}
-            className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 active:scale-95 transition-all"
-            title="Step Back 1 Frame (Left Arrow)"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" />
-          </button>
-
-          <button
+            type="button"
             onClick={togglePlay}
-            className={`p-1.5 rounded text-white font-medium active:scale-95 transition-all ${
-              isPlaying
-                ? 'bg-amber-600 hover:bg-amber-500'
-                : 'bg-cyan-600 hover:bg-cyan-500'
-            }`}
-            title="Play/Pause (Space or K)"
+            aria-label={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+            title={isPlaying ? 'Pause (Space or K)' : 'Play (Space or K)'}
+            className="inline-flex h-7 w-8 items-center justify-center rounded bg-paint text-asphalt-950 transition-colors hover:bg-[#f7cd58]"
           >
-            {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+            {isPlaying ? <Pause className="h-3.5 w-3.5 fill-current" /> : <Play className="h-3.5 w-3.5 fill-current" />}
           </button>
-
-          <button
-            onClick={() => stepFrame(1)}
-            className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 active:scale-95 transition-all"
-            title="Step Forward 1 Frame (Right Arrow)"
-          >
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
-
-          {/* Speed selector */}
-          <div className="flex items-center space-x-1 ml-2 border border-zinc-800 rounded bg-zinc-900 p-0.5">
-            {[0.25, 0.5, 1.0].map((s) => (
-              <button
-                key={s}
-                onClick={() => setPlaybackSpeed(s)}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-all ${
-                  playbackSpeed === s
-                    ? 'bg-zinc-700 text-zinc-100 font-bold'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {s}x
-              </button>
-            ))}
-          </div>
+          <IconButton label="Step forward one frame (right arrow)" onClick={() => stepFrame(1)}><ChevronRight className="h-4 w-4" /></IconButton>
+          <Segmented
+            className="ml-1.5"
+            label="Playback speed"
+            value={playbackSpeed}
+            onChange={setPlaybackSpeed}
+            options={[0.25, 0.5, 1].map((s) => ({ value: s, label: `${s}×` }))}
+          />
         </div>
 
-        {/* Center: Highlight Notice if active */}
-        {highlightWindow && (
-          <div className="flex items-center space-x-1.5 text-xs text-cyan-400 font-mono bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/60">
-            <span>CLAIM WINDOW: {highlightWindow.t0.toFixed(2)}s – {highlightWindow.t1.toFixed(2)}s</span>
-            {highlightWindow.reason && <span className="text-zinc-400 font-sans text-[11px]">({highlightWindow.reason})</span>}
-          </div>
-        )}
-
-        {/* Right: Exact Monospace Telemetry Readout per Claude's rule */}
-        <div className="flex items-center space-x-3 text-xs font-mono">
-          <div className="flex items-center space-x-1.5 text-zinc-300">
-            <span className="text-zinc-500">FRAME:</span>
-            <span className="font-bold text-zinc-100">{currentFrame}</span>
-            <span className="text-zinc-500">/ {totalFrames - 1}</span>
-          </div>
-
-          <div className="h-3 w-[1px] bg-zinc-800" />
-
-          <div className="flex items-center space-x-1.5 text-zinc-300">
-            <span className="text-zinc-500">TRUE T:</span>
-            <span className="font-bold text-cyan-400">{currentTime.toFixed(3)}s</span>
-            {caseData?.clock?.median_sigma_s && (
-              <span className="text-[10px] text-zinc-500">
-                (±{(caseData.clock.median_sigma_s * 1000).toFixed(0)}ms)
-              </span>
-            )}
-          </div>
-
-          {caseData?.clock?.dropped_frames_inferred !== undefined && (
-            <div className="hidden sm:flex items-center space-x-1 text-[11px] text-amber-400/90 bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-900/40">
-              <AlertTriangle className="w-3 h-3" />
-              <span>{caseData.clock.dropped_frames_inferred} drops recovered</span>
-            </div>
+        <div className="min-w-0 flex-1 truncate text-[12px] text-bone-300">
+          {highlightWindow && (
+            <>
+              <span className="measured text-paint">{highlightWindow.t0.toFixed(2)} to {highlightWindow.t1.toFixed(2)} s</span>
+              {highlightWindow.reason && <span className="said ml-2 text-bone-300">{highlightWindow.reason}</span>}
+            </>
           )}
         </div>
+
+        <dl className="measured flex items-center gap-3 text-[12px] text-bone-400">
+          <div className="flex gap-1"><dt>frame</dt><dd className="text-bone">{currentFrame}<span className="text-bone-500">/{totalFrames - 1}</span></dd></div>
+          <div className="flex gap-1">
+            <dt>t</dt>
+            <dd className="text-paint">{currentTime.toFixed(3)} s</dd>
+            {sigmaMs !== null && <dd className="hidden sm:block" title="Median frame-time uncertainty">±{sigmaMs.toFixed(0)} ms</dd>}
+          </div>
+          {inferred != null && (
+            <div className="hidden gap-1 lg:flex" title="Frames the recorder lost, recovered from the burned-in clock and the vehicles' motion">
+              <dd className="text-signal-amber">{inferred}</dd><dt>drops recovered</dt>
+            </div>
+          )}
+        </dl>
       </div>
-    </div>
+    </section>
   );
 };

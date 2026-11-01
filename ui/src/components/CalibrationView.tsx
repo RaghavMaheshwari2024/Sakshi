@@ -4,8 +4,6 @@ import {
   Grid,
   Clock,
   Radio,
-  CheckCircle2,
-  AlertTriangle,
   Save,
   Play,
   RotateCcw,
@@ -14,10 +12,10 @@ import {
   Sliders,
   Move,
   Camera,
-  Layers,
   ArrowLeft,
 } from 'lucide-react';
-import { CalibrationInfo } from '../types/case';
+import { CalibrationInfo, ClipInfo } from '../types/case';
+import { Button, Notice, Segmented } from './ui';
 
 export interface PointPair {
   id: string;
@@ -29,8 +27,12 @@ export interface PointPair {
 }
 
 export interface CalibrationViewProps {
-  caseId: string;
+  /** Backend case. Null for a pre-rendered scenario, which is explore-only. */
+  caseId: string | null;
+  /** Shown when there is no backend frame to draw on. */
+  frameFallbackUrl?: string | null;
   initialCalibration?: CalibrationInfo | null;
+  clip?: ClipInfo | null;
   cameraMode?: 'fixed' | 'dashcam';
   onSave?: (calibData: any) => Promise<void> | void;
   onRunPipeline?: () => void;
@@ -51,7 +53,9 @@ const DEFAULT_POINTS: PointPair[] = [
 
 export const CalibrationView: React.FC<CalibrationViewProps> = ({
   caseId,
+  frameFallbackUrl,
   initialCalibration,
+  clip,
   cameraMode = 'fixed',
   onSave,
   onRunPipeline,
@@ -82,8 +86,10 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     ]
   );
 
-  const [clockBoxPx, setClockBoxPx] = useState<[number, number, number, number]>([15, 10, 420, 52]);
-  const [signalLightPx, setSignalLightPx] = useState<[number, number]>([950, 220]);
+  // Starting guesses for a 1280 px wide frame, scaled to this clip.
+  const px = (clip?.width || 1280) / 1280;
+  const [clockBoxPx, setClockBoxPx] = useState<[number, number, number, number]>(() => [15, 10, 420, 52].map((v) => Math.round(v * px)) as [number, number, number, number]);
+  const [signalLightPx, setSignalLightPx] = useState<[number, number]>(() => [Math.round(950 * px), Math.round(220 * px)]);
 
   // Dashcam specific parameters
   const [dashcamLaneWidth, setDashcamLaneWidth] = useState<number>(3.5);
@@ -97,6 +103,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
   const [homographyH, setHomographyH] = useState<number[][] | null>(initialCalibration?.H ?? null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Canvas refs & interaction
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -108,19 +115,25 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
   const [frameImage, setFrameImage] = useState<HTMLImageElement | null>(null);
   const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
 
-  // Load frame 0 from backend or mock
+  // A frame to click on: frame 0 from the backend, else the scenario's still.
   useEffect(() => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.src = `/cases/${caseId}/frame/0.jpg`;
-    img.onload = () => {
-      setFrameImage(img);
+    const urls = [caseId ? `/cases/${caseId}/frame/0.jpg` : null, frameFallbackUrl].filter(Boolean) as string[];
+    let live = true;
+    const tryNext = (i: number) => {
+      if (i >= urls.length) { if (live) setFrameImage(null); return; }
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => { if (live) setFrameImage(img); };
+      img.onerror = () => tryNext(i + 1);
+      img.src = urls[i];
     };
-    img.onerror = () => {
-      // If frame image fails to load, fallback gracefully
-      setFrameImage(null);
-    };
-  }, [caseId]);
+    tryNext(0);
+    return () => { live = false; };
+  }, [caseId, frameFallbackUrl]);
+
+  // Calibration points live in the clip's own pixels, so the canvas does too.
+  const canvasW = clip?.width || frameImage?.naturalWidth || 1280;
+  const canvasH = clip?.height || frameImage?.naturalHeight || 720;
 
   // Compute Homography Matrix & Reprojection Error using DLT Least Squares
   const solveHomography = useCallback((pts: PointPair[]) => {
@@ -229,10 +242,31 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     setPoints(updatedPts);
   }, []);
 
-  // Update homography when points change
+  // The saved fit is what the pipeline used, so show it until a point changes;
+  // this screen's live solve is a close estimate, not the engine's own fit.
+  const showingSavedFit = useRef(Boolean(initialCalibration?.H));
   useEffect(() => {
+    if (showingSavedFit.current && initialCalibration?.H) {
+      showingSavedFit.current = false;
+      const H = initialCalibration.H;
+      setPoints((prev) => prev.map((p) => {
+        const w = H[2][0] * p.u + H[2][1] * p.v + H[2][2];
+        const err = Math.hypot((H[0][0] * p.u + H[0][1] * p.v + H[0][2]) / w - p.x, (H[1][0] * p.u + H[1][1] * p.v + H[1][2]) / w - p.y);
+        return { ...p, errM: Math.round(err * 1000) / 1000 };
+      }));
+      return;
+    }
     solveHomography(points);
+    // Only the number of points re-fits here; edits call solveHomography directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points.length]);
+
+  const imageToGround = (u: number, v: number): [number, number] | null => {
+    if (!homographyH) return null;
+    const H = homographyH;
+    const w = H[2][0] * u + H[2][1] * v + H[2][2];
+    return w ? [(H[0][0] * u + H[0][1] * v + H[0][2]) / w, (H[1][0] * u + H[1][1] * v + H[1][2]) / w] : null;
+  };
 
   // Project Ground (X, Y) to Image (u, v) using H^-1
   const groundToImage = useCallback(
@@ -282,8 +316,8 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const width = 1280;
-    const height = 720;
+    const width = canvasW;
+    const height = canvasH;
     canvas.width = width;
     canvas.height = height;
 
@@ -292,11 +326,11 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       ctx.drawImage(frameImage, 0, 0, width, height);
     } else {
       // Draw simulated photogrammetric roadway canvas
-      ctx.fillStyle = '#0f1015';
+      ctx.fillStyle = '#0f1012';
       ctx.fillRect(0, 0, width, height);
 
       // Roadway asphalt surface
-      ctx.fillStyle = '#161821';
+      ctx.fillStyle = '#141517';
       ctx.beginPath();
       ctx.moveTo(120, height);
       ctx.lineTo(440, 290);
@@ -306,7 +340,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       ctx.fill();
 
       // Crossing street
-      ctx.fillStyle = '#1a1c27';
+      ctx.fillStyle = '#1a1b1e';
       ctx.beginPath();
       ctx.moveTo(0, 480);
       ctx.lineTo(width, 360);
@@ -328,10 +362,10 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
 
     // 2. Draw Ground Grid Overlay (Photogrammetric Perspective Grid)
     if (homographyH) {
-      ctx.strokeStyle = 'rgba(6, 182, 212, 0.35)'; // cyan glow
+      ctx.strokeStyle = 'rgba(242, 192, 55, 0.32)'; 
       ctx.lineWidth = 1.5;
-      ctx.font = '10px "JetBrains Mono", monospace';
-      ctx.fillStyle = 'rgba(6, 182, 212, 0.7)';
+      ctx.font = '10px "IBM Plex Mono", monospace';
+      ctx.fillStyle = 'rgba(242, 192, 55, 0.8)';
 
       // Longitudinal lines along X (-20 to 15 m)
       for (let x = -20; x <= 15; x += 5) {
@@ -365,7 +399,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     // 3. Draw Dashcam Guides (if Dashcam Mode is ON)
     if (activeCameraMode === 'dashcam') {
       // Horizon line
-      ctx.strokeStyle = 'rgba(244, 63, 94, 0.6)'; // Rose
+      ctx.strokeStyle = 'rgba(239, 90, 76, 0.7)'; // Rose
       ctx.setLineDash([6, 6]);
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -374,19 +408,19 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.font = '10px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#f43f5e';
+      ctx.font = '10px "IBM Plex Mono", monospace';
+      ctx.fillStyle = '#ef5a4c';
       ctx.fillText('HORIZON LINE (PITCH)', 20, horizonY - 6);
 
       // Vanishing Point
-      ctx.fillStyle = '#f43f5e';
+      ctx.fillStyle = '#ef5a4c';
       ctx.beginPath();
       ctx.arc(vanishingPoint[0], vanishingPoint[1], 4, 0, Math.PI * 2);
       ctx.fill();
 
       // Lane Guide rays from vanishing point
       const laneSpread = 260 * (dashcamLaneWidth / 3.5);
-      ctx.strokeStyle = 'rgba(244, 63, 94, 0.4)';
+      ctx.strokeStyle = 'rgba(239, 90, 76, 0.45)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(vanishingPoint[0], vanishingPoint[1]);
@@ -403,7 +437,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
 
       if (p1 && p2) {
         // Glowing stop line
-        ctx.strokeStyle = '#f59e0b'; // Amber
+        ctx.strokeStyle = '#edeae3'; // Amber
         ctx.lineWidth = 4;
         ctx.beginPath();
         ctx.moveTo(p1[0], p1[1]);
@@ -412,7 +446,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
 
         // Endpoints
         [p1, p2].forEach((p, idx) => {
-          ctx.fillStyle = '#f59e0b';
+          ctx.fillStyle = '#edeae3';
           ctx.beginPath();
           ctx.arc(p[0], p[1], 6, 0, Math.PI * 2);
           ctx.fill();
@@ -420,8 +454,8 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
           ctx.lineWidth = 1.5;
           ctx.stroke();
 
-          ctx.font = '10px "JetBrains Mono", monospace';
-          ctx.fillStyle = '#f59e0b';
+          ctx.font = '10px "IBM Plex Mono", monospace';
+          ctx.fillStyle = '#edeae3';
           ctx.fillText(`STOP ${idx + 1}`, p[0] + 8, p[1] - 8);
         });
 
@@ -433,15 +467,15 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
           stopLineM[0][1] - stopLineM[1][1]
         ).toFixed(1);
 
-        ctx.fillStyle = 'rgba(24, 24, 27, 0.85)';
-        ctx.strokeStyle = '#f59e0b';
+        ctx.fillStyle = 'rgba(10, 11, 12, 0.88)';
+        ctx.strokeStyle = '#edeae3';
         ctx.lineWidth = 1;
         ctx.fillRect(midU - 45, midV - 22, 90, 18);
         ctx.strokeRect(midU - 45, midV - 22, 90, 18);
 
-        ctx.font = '10px "JetBrains Mono", monospace';
-        ctx.fillStyle = '#fbbf24';
-        ctx.fillText(`STOP LINE: ${lineLenM}m`, midU - 40, midV - 10);
+        ctx.font = '10px "IBM Plex Mono", monospace';
+        ctx.fillStyle = '#edeae3';
+        ctx.fillText(`STOP LINE ${lineLenM} m`, midU - 40, midV - 10);
       }
     }
 
@@ -451,38 +485,38 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       const bw = x2 - x1;
       const bh = y2 - y1;
 
-      ctx.strokeStyle = '#c084fc'; // Purple
+      ctx.strokeStyle = '#b4b1a9'; // Purple
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 3]);
       ctx.strokeRect(x1, y1, bw, bh);
       ctx.setLineDash([]);
 
-      ctx.fillStyle = 'rgba(192, 132, 252, 0.15)';
+      ctx.fillStyle = 'rgba(180, 177, 169, 0.12)';
       ctx.fillRect(x1, y1, bw, bh);
 
       // Corner handles
-      ctx.fillStyle = '#c084fc';
+      ctx.fillStyle = '#b4b1a9';
       ctx.fillRect(x1 - 3, y1 - 3, 6, 6);
       ctx.fillRect(x2 - 3, y1 - 3, 6, 6);
       ctx.fillRect(x1 - 3, y2 - 3, 6, 6);
       ctx.fillRect(x2 - 3, y2 - 3, 6, 6);
 
-      ctx.font = '10px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#c084fc';
-      ctx.fillText('CLOCK OCR (Muse Spark)', x1 + 4, y1 - 5);
+      ctx.font = '10px "IBM Plex Mono", monospace';
+      ctx.fillStyle = '#b4b1a9';
+      ctx.fillText('CLOCK (Muse Spark)', x1 + 4, y1 - 5);
     }
 
     // 6. Draw Signal Head Marker
     if (signalLightPx) {
       const [su, sv] = signalLightPx;
 
-      ctx.strokeStyle = '#10b981'; // Emerald
+      ctx.strokeStyle = '#4fbf8b'; // Emerald
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(su, sv, 12, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.fillStyle = '#10b981';
+      ctx.fillStyle = '#4fbf8b';
       ctx.beginPath();
       ctx.arc(su, sv, 4, 0, Math.PI * 2);
       ctx.fill();
@@ -495,9 +529,9 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       ctx.lineTo(su, sv + 18);
       ctx.stroke();
 
-      ctx.font = '10px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#34d399';
-      ctx.fillText('SIGNAL HEAD (Governing)', su + 16, sv + 4);
+      ctx.font = '10px "IBM Plex Mono", monospace';
+      ctx.fillStyle = '#4fbf8b';
+      ctx.fillText('GOVERNING SIGNAL', su + 16, sv + 4);
     }
 
     // 7. Draw Calibration Points
@@ -506,7 +540,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
 
       // Outer pulse ring if selected
       if (isSelected) {
-        ctx.strokeStyle = 'rgba(6, 182, 212, 0.5)';
+        ctx.strokeStyle = 'rgba(242, 192, 55, 0.5)';
         ctx.lineWidth = 6;
         ctx.beginPath();
         ctx.arc(p.u, p.v, 14, 0, Math.PI * 2);
@@ -514,7 +548,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       }
 
       // Pin circle
-      ctx.fillStyle = isSelected ? '#06b6d4' : '#0891b2';
+      ctx.fillStyle = isSelected ? '#f2c037' : '#c99a22';
       ctx.beginPath();
       ctx.arc(p.u, p.v, 9, 0, Math.PI * 2);
       ctx.fill();
@@ -523,8 +557,8 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       ctx.stroke();
 
       // ID text inside pin
-      ctx.font = 'bold 9px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 9px "IBM Plex Mono", monospace';
+      ctx.fillStyle = '#0a0b0c';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(p.id, p.u, p.v);
@@ -532,16 +566,16 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
       ctx.textBaseline = 'alphabetic';
 
       // Coordinate callout badge
-      ctx.font = '9px "JetBrains Mono", monospace';
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.font = '9px "IBM Plex Mono", monospace';
+      ctx.fillStyle = 'rgba(10, 11, 12, 0.88)';
       ctx.fillRect(p.u + 12, p.v - 16, 105, 26);
-      ctx.strokeStyle = isSelected ? '#06b6d4' : 'rgba(255, 255, 255, 0.2)';
+      ctx.strokeStyle = isSelected ? '#f2c037' : 'rgba(255, 255, 255, 0.2)';
       ctx.lineWidth = 1;
       ctx.strokeRect(p.u + 12, p.v - 16, 105, 26);
 
-      ctx.fillStyle = '#94a3b8';
+      ctx.fillStyle = '#b4b1a9';
       ctx.fillText(`img: (${p.u.toFixed(0)}, ${p.v.toFixed(0)})`, p.u + 16, p.v - 4);
-      ctx.fillStyle = '#38bdf8';
+      ctx.fillStyle = '#f2c037';
       ctx.fillText(`gnd: (${p.x.toFixed(1)}, ${p.y.toFixed(1)})m`, p.u + 16, p.v + 7);
     });
   }, [
@@ -557,10 +591,12 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     horizonY,
     vanishingPoint,
     dashcamLaneWidth,
+    canvasW,
+    canvasH,
   ]);
 
   // Canvas Mouse Interaction Handlers
-  const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>): [number, number] => {
+  const getCanvasCoords = (e: React.PointerEvent<HTMLCanvasElement>): [number, number] => {
     const canvas = canvasRef.current;
     if (!canvas) return [0, 0];
     const rect = canvas.getBoundingClientRect();
@@ -569,7 +605,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
   };
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const [u, v] = getCanvasCoords(e);
 
     if (activeTool === 'points') {
@@ -580,14 +616,16 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
         setSelectedPointId(clicked.id);
         return;
       }
-      // If clicking empty area, add new point
-      const newId = `P${points.length + 1}`;
+      // A new point starts where the current fit puts it, so it cannot wreck the
+      // fit before its real ground position has been typed in.
+      const newId = `P${Math.max(0, ...points.map((p) => Number(p.id.slice(1)) || 0)) + 1}`;
+      const predicted = imageToGround(u, v);
       const newPoint: PointPair = {
         id: newId,
         u: Math.round(u * 10) / 10,
         v: Math.round(v * 10) / 10,
-        x: 0.0,
-        y: 0.0,
+        x: predicted ? Math.round(predicted[0] * 10) / 10 : 0,
+        y: predicted ? Math.round(predicted[1] * 10) / 10 : 0,
       };
       const updated = [...points, newPoint];
       setPoints(updated);
@@ -614,7 +652,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const [u, v] = getCanvasCoords(e);
 
     if (draggingPointId) {
@@ -724,6 +762,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
           : null,
     };
 
+    setSaveError(null);
     try {
       if (onSave) {
         await onSave(payload);
@@ -734,13 +773,20 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
           body: JSON.stringify(payload),
         });
         if (!res.ok) {
-          throw new Error('Server rejected calibration');
+          const detail = await res.json().then((j) => j.detail).catch(() => null);
+          throw new Error(detail || `The backend returned ${res.status}.`);
         }
+        const fit = await res.json();
+        setReprojRmsM(fit.reproj_rms_m);
+        setReprojMaxM(fit.reproj_max_m);
       }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
-    } catch {
+      return true;
+    } catch (err) {
       setSaveStatus('error');
+      setSaveError(err instanceof TypeError ? 'The backend is not reachable.' : (err as Error).message);
+      return false;
     } finally {
       setIsSaving(false);
     }
@@ -752,235 +798,144 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
   ).toFixed(2);
 
   return (
-    <div className="w-full h-full flex flex-col bg-zinc-950 text-zinc-100 font-sans overflow-hidden select-none">
-      {/* Top Controls Bar */}
-      <div className="h-14 px-6 border-b border-zinc-800 bg-zinc-900/60 flex items-center justify-between z-20">
-        <div className="flex items-center space-x-3">
-          <div className="p-2 rounded-lg bg-cyan-950/80 border border-cyan-800 text-cyan-400">
-            <Camera className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <h1 className="text-sm font-semibold tracking-wide text-zinc-100">
-                Camera Calibration Workspace
-              </h1>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-zinc-800 text-zinc-300 border border-zinc-700">
-                {caseId}
-              </span>
-            </div>
-            <p className="text-[11px] text-zinc-400">
-              Interactive photogrammetric plane fitting & ground grid reprojection
-            </p>
-          </div>
+    <div className="flex flex-1 flex-col bg-asphalt-900 text-bone lg:h-[calc(100dvh-53px)] lg:flex-none lg:overflow-hidden">
+      {/* Top bar */}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-line px-3 py-2 sm:px-4">
+        <div className="min-w-0">
+          <h1 className="font-serif text-[17px] font-light leading-tight text-bone">Calibration</h1>
+          <p className="text-[12px] text-bone-400">Tie image pixels to metres on the road, then fit the plane.</p>
         </div>
-
-        {/* Camera Mode Toggle & Tool Palette */}
-        <div className="flex items-center space-x-2">
-          {/* Mode Switcher */}
-          <div className="flex items-center rounded-lg bg-zinc-950 p-1 border border-zinc-800">
-            <button
-              onClick={() => setActiveCameraMode('fixed')}
-              className={`px-3 py-1 rounded text-xs font-mono font-medium transition-all ${
-                activeCameraMode === 'fixed'
-                  ? 'bg-zinc-800 text-cyan-400 border border-zinc-700 shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              Fixed CCTV
-            </button>
-            <button
-              onClick={() => setActiveCameraMode('dashcam')}
-              className={`px-3 py-1 rounded text-xs font-mono font-medium transition-all ${
-                activeCameraMode === 'dashcam'
-                  ? 'bg-rose-950/80 text-rose-400 border border-rose-800 shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              Dashcam
-            </button>
-          </div>
-
-          <div className="h-5 w-[1px] bg-zinc-800" />
-
-          {/* Active Tool Selector */}
-          <div className="flex items-center space-x-1 bg-zinc-950 p-1 rounded-lg border border-zinc-800">
-            <button
-              onClick={() => setActiveTool('points')}
-              className={`px-2.5 py-1 rounded text-xs font-mono flex items-center space-x-1.5 transition-all ${
-                activeTool === 'points'
-                  ? 'bg-cyan-950 text-cyan-400 border border-cyan-800'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-              title="Click/drag points on ground plane"
-            >
-              <Crosshair className="w-3.5 h-3.5" />
-              <span>Points ({points.length})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTool('stopline')}
-              className={`px-2.5 py-1 rounded text-xs font-mono flex items-center space-x-1.5 transition-all ${
-                activeTool === 'stopline'
-                  ? 'bg-amber-950 text-amber-400 border border-amber-800'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-              title="Edit Stop Line segment"
-            >
-              <Move className="w-3.5 h-3.5" />
-              <span>Stop Line</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTool('clock')}
-              className={`px-2.5 py-1 rounded text-xs font-mono flex items-center space-x-1.5 transition-all ${
-                activeTool === 'clock'
-                  ? 'bg-purple-950 text-purple-400 border border-purple-800'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-              title="Select burned-in clock region"
-            >
-              <Clock className="w-3.5 h-3.5" />
-              <span>Clock ROI</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTool('signal')}
-              className={`px-2.5 py-1 rounded text-xs font-mono flex items-center space-x-1.5 transition-all ${
-                activeTool === 'signal'
-                  ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-              title="Marker for governing traffic light"
-            >
-              <Radio className="w-3.5 h-3.5" />
-              <span>Signal</span>
-            </button>
-          </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmented
+            label="Camera type"
+            value={activeCameraMode}
+            onChange={setActiveCameraMode}
+            options={[{ value: 'fixed', label: 'Fixed camera' }, { value: 'dashcam', label: 'Dashcam' }]}
+          />
+          <Segmented
+            label="Tool"
+            value={activeTool}
+            onChange={setActiveTool}
+            options={[
+              { value: 'points', label: <><Crosshair className="h-3 w-3" />Points {points.length}</>, title: 'Click or drag points on the road' },
+              { value: 'stopline', label: <><Move className="h-3 w-3" />Stop line</>, title: 'Edit the stop line' },
+              { value: 'clock', label: <><Clock className="h-3 w-3" />Clock</>, title: 'Box the burned-in clock' },
+              { value: 'signal', label: <><Radio className="h-3 w-3" />Signal</>, title: 'Mark the governing traffic light' },
+            ]}
+          />
         </div>
       </div>
 
+      {!caseId && (
+        <div className="shrink-0 border-b border-line bg-asphalt-850 px-3 py-1.5 text-[12.5px] text-bone-300 sm:px-4">
+          This is a pre-rendered scenario, so changes stay on this screen: the fit updates live but nothing is saved. Start a new case to calibrate real footage.
+        </div>
+      )}
+
       {/* Main Workspace Layout */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Left: Large Video Frame Canvas */}
         <div
           ref={containerRef}
-          className="flex-1 relative bg-black flex items-center justify-center overflow-hidden border-b lg:border-b-0 lg:border-r border-zinc-800"
+          className="relative flex min-h-[46vw] min-w-0 flex-1 items-center justify-center overflow-hidden border-b border-line bg-asphalt-950 lg:min-h-0 lg:border-b-0 lg:border-r"
         >
           <canvas
             ref={canvasRef}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            className="w-full h-full object-contain cursor-crosshair"
+            onPointerDown={handleMouseDown}
+            onPointerMove={handleMouseMove}
+            onPointerUp={handleMouseUp}
+            aria-label="Camera frame. Click to add a calibration point, drag a pin to move it."
+            className="block max-h-full max-w-full cursor-crosshair touch-none"
+            style={{ aspectRatio: `${canvasW} / ${canvasH}` }}
           />
 
           {/* Floating Instructions HUD */}
-          <div className="absolute top-4 left-4 px-3 py-1.5 rounded-lg bg-zinc-950/80 backdrop-blur border border-zinc-800 text-[11px] font-mono text-zinc-300 pointer-events-none flex items-center space-x-2">
-            <Layers className="w-3.5 h-3.5 text-cyan-400" />
+          <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1.5 rounded-[3px] bg-asphalt-950/85 px-2 py-1 text-[12px] text-bone-200">
             <span>
-              {activeTool === 'points' && 'Click canvas to add point. Drag pin to reposition.'}
-              {activeTool === 'stopline' && 'Drag endpoint circles to position stop line.'}
-              {activeTool === 'clock' && 'Click & drag bounding box over burned-in CCTV timestamp.'}
-              {activeTool === 'signal' && 'Click traffic light head governing the stop line.'}
+              {activeTool === 'points' && 'Click to add a point. Drag a pin to move it.'}
+              {activeTool === 'stopline' && 'Drag the ends of the stop line.'}
+              {activeTool === 'clock' && 'Drag a box over the burned-in clock.'}
+              {activeTool === 'signal' && 'Click the traffic light that governs the stop line.'}
             </span>
           </div>
 
-          {/* Canvas Bottom Overlay: Live Reprojection Badge */}
-          <div className="absolute bottom-4 left-4 flex items-center space-x-2">
-            <div
-              className={`px-3 py-1.5 rounded-lg border flex items-center space-x-2 text-xs font-mono backdrop-blur shadow-lg ${
-                reprojRmsM < 0.15
-                  ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
-                  : 'bg-amber-950/80 border-amber-500/50 text-amber-300'
-              }`}
-            >
-              {reprojRmsM < 0.15 ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              ) : (
-                <AlertTriangle className="w-4 h-4 text-amber-400" />
-              )}
-              <span>
-                RMS Reprojection Error: <strong>{reprojRmsM.toFixed(3)} m</strong>
-              </span>
-              <span className="text-[10px] opacity-75">
-                ({reprojRmsM < 0.15 ? 'Optimal < 0.15m' : 'Refinement Recommended'})
-              </span>
-            </div>
+          <div className={`measured pointer-events-none absolute bottom-2 left-2 rounded-[3px] bg-asphalt-950/85 px-2 py-1 text-[12px] ${reprojRmsM < 0.15 ? 'text-signal-green' : 'text-signal-amber'}`}>
+            RMS {reprojRmsM.toFixed(3)} m
           </div>
         </div>
 
         {/* Right: Calibration Controls & Point Pair Table */}
-        <div className="w-full lg:w-[460px] bg-zinc-950 flex flex-col border-l border-zinc-800 overflow-y-auto">
+        <div className="flex w-full flex-col overflow-y-auto bg-asphalt-900 lg:w-[440px]">
           {/* Live Metrics Header Card */}
-          <div className="p-4 border-b border-zinc-800/80 bg-zinc-900/30 space-y-3">
+          <div className="p-4 border-b border-line  space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-mono uppercase tracking-wider text-zinc-400">
-                Calibration Quality
+              <span className="text-[12.5px]  text-bone-400">
+                Fit quality
               </span>
               <div className="flex items-center space-x-1.5">
                 <button
                   onClick={() => loadPreset('synthetic')}
-                  className="px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700"
+                  className="px-2 py-0.5 rounded text-[11.5px] font-mono bg-asphalt-800 hover:bg-asphalt-700 text-bone-300 border border-line-strong"
                 >
-                  Load Synthetic
+                  Synthetic preset
                 </button>
                 <button
                   onClick={() => loadPreset('lane')}
-                  className="px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700"
+                  className="px-2 py-0.5 rounded text-[11.5px] font-mono bg-asphalt-800 hover:bg-asphalt-700 text-bone-300 border border-line-strong"
                 >
-                  3.5m Lane Grid
+                  3.5 m lane preset
                 </button>
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div
-                className={`p-3 rounded-lg border flex flex-col justify-between ${
+                className={`p-3 rounded border flex flex-col justify-between ${
                   reprojRmsM < 0.15
-                    ? 'bg-emerald-950/30 border-emerald-800/60'
-                    : 'bg-amber-950/30 border-amber-800/60'
+                    ? 'bg-asphalt-850 border-line'
+                    : 'bg-asphalt-850 border-line'
                 }`}
               >
-                <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400">
-                  RMS Error (Metres)
+                <span className="text-[11.5px] font-mono  text-bone-400">
+                  RMS error
                 </span>
                 <div className="flex items-baseline space-x-1.5 mt-1">
                   <span
-                    className={`text-2xl font-mono font-bold tracking-tight ${
-                      reprojRmsM < 0.15 ? 'text-emerald-400' : 'text-amber-400'
+                    className={`measured text-[24px] tracking-tight ${
+                      reprojRmsM < 0.15 ? 'text-signal-green' : 'text-signal-amber'
                     }`}
                   >
                     {reprojRmsM.toFixed(3)}
                   </span>
-                  <span className="text-xs font-mono text-zinc-400">m</span>
+                  <span className="text-[12.5px] text-bone-400">m</span>
                 </div>
-                <span className="text-[10px] text-zinc-400 mt-1">
-                  {reprojRmsM < 0.15 ? 'Target achieved (< 0.15m)' : 'Above threshold (> 0.15m)'}
+                <span className="text-[11.5px] text-bone-400 mt-1">
+                  {reprojRmsM < 0.15 ? 'Under the 0.15 m target' : 'Above the 0.15 m target; refine the points'}
                 </span>
               </div>
 
-              <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/50 flex flex-col justify-between">
-                <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400">
-                  Max Residual
+              <div className="p-3 rounded border border-line bg-asphalt-850 flex flex-col justify-between">
+                <span className="text-[11.5px] font-mono  text-bone-400">
+                  Worst point
                 </span>
                 <div className="flex items-baseline space-x-1.5 mt-1">
-                  <span className="text-2xl font-mono font-bold text-zinc-200">
+                  <span className="measured text-[24px] text-bone-200">
                     {reprojMaxM.toFixed(3)}
                   </span>
-                  <span className="text-xs font-mono text-zinc-400">m</span>
+                  <span className="text-[12.5px] text-bone-400">m</span>
                 </div>
-                <span className="text-[10px] text-zinc-500 mt-1">Single-point worst fit</span>
+                <span className="text-[11.5px] text-bone-500 mt-1">Largest single residual</span>
               </div>
             </div>
           </div>
 
           {/* Point Pair Correspondence Table */}
-          <div className="p-4 border-b border-zinc-800/80 space-y-3">
+          <div className="p-4 border-b border-line space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2">
-                <Grid className="w-4 h-4 text-cyan-400" />
-                <h3 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">
-                  Point Pairs ({points.length} matching pairs)
+                <Grid className="w-4 h-4 text-paint" />
+                <h3 className="text-[12.5px] font-medium text-bone-200 ">
+                  Point pairs ({points.length})
                 </h3>
               </div>
               <button
@@ -995,17 +950,17 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                   };
                   setPoints([...points, newPoint]);
                 }}
-                className="px-2 py-1 rounded text-xs font-mono bg-cyan-950 border border-cyan-800 text-cyan-300 hover:bg-cyan-900 flex items-center space-x-1"
+                className="px-2 py-1 rounded text-[12.5px] bg-paint-soft border border-line-strong text-paint hover:bg-asphalt-800 flex items-center space-x-1"
               >
                 <Plus className="w-3 h-3" />
-                <span>Add Point</span>
+                <span>Add point</span>
               </button>
             </div>
 
             {/* Table */}
-            <div className="max-h-56 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950">
-              <table className="w-full text-left text-xs font-mono">
-                <thead className="bg-zinc-900/80 border-b border-zinc-800 text-zinc-400">
+            <div className="max-h-56 overflow-y-auto rounded border border-line bg-asphalt-950">
+              <table className="w-full text-left text-[12.5px]">
+                <thead className="bg-asphalt-850 border-b border-line text-bone-400">
                   <tr>
                     <th className="py-1.5 px-2.5">ID</th>
                     <th className="py-1.5 px-2">Image (u, v) px</th>
@@ -1014,18 +969,18 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                     <th className="py-1.5 px-2 text-center">Del</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-zinc-900 text-zinc-300">
+                <tbody className="divide-y divide-line text-bone-300">
                   {points.map((p) => {
                     const isSelected = selectedPointId === p.id;
                     return (
                       <tr
                         key={p.id}
                         onClick={() => setSelectedPointId(p.id)}
-                        className={`hover:bg-zinc-900/60 cursor-pointer transition-colors ${
-                          isSelected ? 'bg-cyan-950/40 text-cyan-200' : ''
+                        className={`hover:bg-asphalt-850 cursor-pointer transition-colors ${
+                          isSelected ? 'bg-paint-soft text-bone' : ''
                         }`}
                       >
-                        <td className="py-1.5 px-2.5 font-bold text-cyan-400">{p.id}</td>
+                        <td className="py-1.5 px-2.5 font-medium text-paint">{p.id}</td>
                         <td className="py-1.5 px-2">
                           <div className="flex items-center space-x-1">
                             <input
@@ -1037,9 +992,9 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                                   prev.map((pt) => (pt.id === p.id ? { ...pt, u: val } : pt))
                                 );
                               }}
-                              className="w-14 bg-zinc-900 px-1 py-0.5 rounded border border-zinc-800 text-zinc-200 text-right focus:border-cyan-500 outline-none"
+                              className="measured w-[58px] rounded border border-line bg-asphalt-850 px-1 py-0.5 text-right text-bone-200 outline-none focus:border-paint"
                             />
-                            <span className="text-zinc-600">,</span>
+                            <span className="text-bone-500">,</span>
                             <input
                               type="number"
                               value={p.v}
@@ -1049,7 +1004,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                                   prev.map((pt) => (pt.id === p.id ? { ...pt, v: val } : pt))
                                 );
                               }}
-                              className="w-14 bg-zinc-900 px-1 py-0.5 rounded border border-zinc-800 text-zinc-200 text-right focus:border-cyan-500 outline-none"
+                              className="measured w-[58px] rounded border border-line bg-asphalt-850 px-1 py-0.5 text-right text-bone-200 outline-none focus:border-paint"
                             />
                           </div>
                         </td>
@@ -1058,7 +1013,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                             <input
                               type="number"
                               step="0.5"
-                              value={p.x}
+                              value={Math.round(p.x * 100) / 100}
                               onChange={(e) => {
                                 const val = parseFloat(e.target.value) || 0;
                                 const updated = points.map((pt) =>
@@ -1067,13 +1022,13 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                                 setPoints(updated);
                                 solveHomography(updated);
                               }}
-                              className="w-14 bg-zinc-900 px-1 py-0.5 rounded border border-zinc-800 text-zinc-200 text-right focus:border-cyan-500 outline-none"
+                              className="measured w-[58px] rounded border border-line bg-asphalt-850 px-1 py-0.5 text-right text-bone-200 outline-none focus:border-paint"
                             />
-                            <span className="text-zinc-600">,</span>
+                            <span className="text-bone-500">,</span>
                             <input
                               type="number"
                               step="0.5"
-                              value={p.y}
+                              value={Math.round(p.y * 100) / 100}
                               onChange={(e) => {
                                 const val = parseFloat(e.target.value) || 0;
                                 const updated = points.map((pt) =>
@@ -1082,16 +1037,16 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                                 setPoints(updated);
                                 solveHomography(updated);
                               }}
-                              className="w-14 bg-zinc-900 px-1 py-0.5 rounded border border-zinc-800 text-zinc-200 text-right focus:border-cyan-500 outline-none"
+                              className="measured w-[58px] rounded border border-line bg-asphalt-850 px-1 py-0.5 text-right text-bone-200 outline-none focus:border-paint"
                             />
                           </div>
                         </td>
                         <td className="py-1.5 px-2 text-right">
                           <span
-                            className={`px-1.5 py-0.5 rounded text-[10px] ${
+                            className={`px-1.5 py-0.5 rounded text-[11.5px] ${
                               (p.errM ?? 0) < 0.15
-                                ? 'text-emerald-400 bg-emerald-950/40'
-                                : 'text-amber-400 bg-amber-950/40'
+                                ? 'text-signal-green bg-signal-greensoft'
+                                : 'text-signal-amber bg-signal-amberSoft'
                             }`}
                           >
                             {(p.errM ?? 0).toFixed(3)}m
@@ -1106,7 +1061,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                                 setPoints(updated);
                                 solveHomography(updated);
                               }}
-                              className="text-zinc-500 hover:text-rose-400 p-0.5"
+                              className="text-bone-500 hover:text-signal-red p-0.5"
                               title="Delete point"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -1121,30 +1076,30 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
             </div>
 
             {/* Typed-Distance Helper Tool */}
-            <div className="p-2.5 rounded-lg bg-zinc-900/60 border border-zinc-800 text-xs space-y-2">
-              <div className="flex items-center space-x-1.5 text-zinc-300 font-medium">
-                <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Typed-Distance Constraint Helper</span>
+            <div className="p-2.5 rounded bg-asphalt-850 border border-line text-[12.5px] space-y-2">
+              <div className="flex items-center space-x-1.5 text-bone-300 font-medium">
+                <Sliders className="w-3.5 h-3.5 text-paint" />
+                <span>Known distances</span>
               </div>
-              <p className="text-[11px] text-zinc-400">
-                Apply known physical road measurement between two points (e.g. standard 3.5m lane):
+              <p className="text-[12px] text-bone-400">
+                Set a measured road distance between two points, such as a 3.5 m lane.
               </p>
               <div className="flex items-center space-x-2">
                 <button
                   onClick={() => handleApplyTypedDistance('P1', 'P2', 3.5)}
-                  className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-[11px] font-mono text-zinc-200 border border-zinc-700"
+                  className="px-2 py-1 rounded bg-asphalt-800 hover:bg-asphalt-700 text-[12px] font-mono text-bone-200 border border-line-strong"
                 >
                   Set P1↔P2 = 3.5m
                 </button>
                 <button
                   onClick={() => handleApplyTypedDistance('P3', 'P4', 3.5)}
-                  className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-[11px] font-mono text-zinc-200 border border-zinc-700"
+                  className="px-2 py-1 rounded bg-asphalt-800 hover:bg-asphalt-700 text-[12px] font-mono text-bone-200 border border-line-strong"
                 >
                   Set P3↔P4 = 3.5m
                 </button>
                 <button
                   onClick={() => handleApplyTypedDistance('P1', 'P3', 25.0)}
-                  className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-[11px] font-mono text-zinc-200 border border-zinc-700"
+                  className="px-2 py-1 rounded bg-asphalt-800 hover:bg-asphalt-700 text-[12px] font-mono text-bone-200 border border-line-strong"
                 >
                   P1↔P3 = 25m
                 </button>
@@ -1153,28 +1108,28 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
           </div>
 
           {/* Stop Line Segment Controls */}
-          <div className="p-4 border-b border-zinc-800/80 space-y-2.5">
+          <div className="p-4 border-b border-line space-y-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2">
-                <Move className="w-4 h-4 text-amber-400" />
-                <h3 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">
-                  Stop Line Segment ({stopLineLength}m)
+                <Move className="w-4 h-4 text-signal-amber" />
+                <h3 className="text-[12.5px] font-medium text-bone-200 ">
+                  Stop line ({stopLineLength}m)
                 </h3>
               </div>
               <span
-                className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                className={`text-[11.5px] font-mono px-2 py-0.5 rounded border ${
                   parseFloat(stopLineLength) >= 0.5
-                    ? 'bg-emerald-950/60 border-emerald-800 text-emerald-400'
-                    : 'bg-rose-950/60 border-rose-800 text-rose-400'
+                    ? 'bg-signal-greensoft border-line text-signal-green'
+                    : 'bg-signal-redsoft border-line text-signal-red'
                 }`}
               >
                 {parseFloat(stopLineLength) >= 0.5 ? 'Valid (>= 0.5m)' : 'Min 0.5m required'}
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-              <div className="p-2 rounded bg-zinc-900 border border-zinc-800 space-y-1">
-                <span className="text-[10px] text-zinc-400 uppercase">Endpoint 1 (X, Y)m</span>
+            <div className="grid grid-cols-2 gap-2 text-[12.5px]">
+              <div className="p-2 rounded bg-asphalt-850 border border-line space-y-1">
+                <span className="text-[11.5px] text-bone-400">Endpoint 1 (X, Y)m</span>
                 <div className="flex items-center space-x-1">
                   <input
                     type="number"
@@ -1187,7 +1142,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                         [stopLineM[1][0], stopLineM[1][1]],
                       ]);
                     }}
-                    className="w-full bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-200 text-right outline-none"
+                    className="w-full bg-asphalt-950 px-1.5 py-0.5 rounded border border-line-strong text-bone-200 text-right outline-none"
                   />
                   <input
                     type="number"
@@ -1200,13 +1155,13 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                         [stopLineM[1][0], stopLineM[1][1]],
                       ]);
                     }}
-                    className="w-full bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-200 text-right outline-none"
+                    className="w-full bg-asphalt-950 px-1.5 py-0.5 rounded border border-line-strong text-bone-200 text-right outline-none"
                   />
                 </div>
               </div>
 
-              <div className="p-2 rounded bg-zinc-900 border border-zinc-800 space-y-1">
-                <span className="text-[10px] text-zinc-400 uppercase">Endpoint 2 (X, Y)m</span>
+              <div className="p-2 rounded bg-asphalt-850 border border-line space-y-1">
+                <span className="text-[11.5px] text-bone-400">Endpoint 2 (X, Y)m</span>
                 <div className="flex items-center space-x-1">
                   <input
                     type="number"
@@ -1219,7 +1174,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                         [val, stopLineM[1][1]],
                       ]);
                     }}
-                    className="w-full bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-200 text-right outline-none"
+                    className="w-full bg-asphalt-950 px-1.5 py-0.5 rounded border border-line-strong text-bone-200 text-right outline-none"
                   />
                   <input
                     type="number"
@@ -1232,7 +1187,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                         [stopLineM[1][0], val],
                       ]);
                     }}
-                    className="w-full bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-200 text-right outline-none"
+                    className="w-full bg-asphalt-950 px-1.5 py-0.5 rounded border border-line-strong text-bone-200 text-right outline-none"
                   />
                 </div>
               </div>
@@ -1240,25 +1195,25 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
           </div>
 
           {/* Clock ROI & Governing Signal Light */}
-          <div className="p-4 border-b border-zinc-800/80 space-y-3">
+          <div className="p-4 border-b border-line space-y-3">
             {/* Clock Bounding Box */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-purple-300 flex items-center space-x-1.5">
+                <span className="text-[12.5px] font-medium text-bone-200 flex items-center space-x-1.5">
                   <Clock className="w-3.5 h-3.5" />
-                  <span>Burned-in Clock Box [x1, y1, x2, y2]</span>
+                  <span>Burned-in clock box</span>
                 </span>
                 <button
                   onClick={() => setClockBoxPx([15, 10, 420, 52])}
-                  className="text-[10px] font-mono text-purple-400 hover:underline"
+                  className="text-[11.5px] font-mono text-bone-400 hover:underline"
                 >
                   Preset [15, 10, 420, 52]
                 </button>
               </div>
-              <div className="grid grid-cols-4 gap-1.5 text-xs font-mono">
+              <div className="grid grid-cols-4 gap-1.5 text-[12.5px]">
                 {['x1', 'y1', 'x2', 'y2'].map((lbl, idx) => (
-                  <div key={lbl} className="bg-zinc-900 p-1.5 rounded border border-zinc-800">
-                    <span className="text-[10px] text-zinc-500 uppercase">{lbl}</span>
+                  <div key={lbl} className="bg-asphalt-850 p-1.5 rounded border border-line">
+                    <span className="text-[11.5px] text-bone-500">{lbl}</span>
                     <input
                       type="number"
                       value={clockBoxPx[idx]}
@@ -1268,7 +1223,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                         next[idx] = val;
                         setClockBoxPx(next);
                       }}
-                      className="w-full bg-zinc-950 px-1 rounded border border-zinc-700 text-zinc-200 text-right outline-none"
+                      className="w-full bg-asphalt-950 px-1 rounded border border-line-strong text-bone-200 text-right outline-none"
                     />
                   </div>
                 ))}
@@ -1276,16 +1231,16 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
             </div>
 
             {/* Signal Light Position */}
-            <div className="space-y-1.5 pt-2 border-t border-zinc-900">
+            <div className="space-y-1.5 pt-2 border-t border-line">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-emerald-400 flex items-center space-x-1.5">
+                <span className="text-[12.5px] font-medium text-signal-green flex items-center space-x-1.5">
                   <Radio className="w-3.5 h-3.5" />
-                  <span>Governing Traffic Light (u, v) px</span>
+                  <span>Governing traffic light (px)</span>
                 </span>
               </div>
-              <div className="flex items-center space-x-2 text-xs font-mono">
-                <div className="flex-1 bg-zinc-900 p-1.5 rounded border border-zinc-800 flex items-center space-x-2">
-                  <span className="text-[10px] text-zinc-500 uppercase">u:</span>
+              <div className="flex items-center space-x-2 text-[12.5px]">
+                <div className="flex-1 bg-asphalt-850 p-1.5 rounded border border-line flex items-center space-x-2">
+                  <span className="text-[11.5px] text-bone-500">u:</span>
                   <input
                     type="number"
                     value={signalLightPx[0]}
@@ -1293,11 +1248,11 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                       const val = parseInt(e.target.value, 10) || 0;
                       setSignalLightPx([val, signalLightPx[1]]);
                     }}
-                    className="w-full bg-zinc-950 px-1 rounded border border-zinc-700 text-zinc-200 text-right outline-none"
+                    className="w-full bg-asphalt-950 px-1 rounded border border-line-strong text-bone-200 text-right outline-none"
                   />
                 </div>
-                <div className="flex-1 bg-zinc-900 p-1.5 rounded border border-zinc-800 flex items-center space-x-2">
-                  <span className="text-[10px] text-zinc-500 uppercase">v:</span>
+                <div className="flex-1 bg-asphalt-850 p-1.5 rounded border border-line flex items-center space-x-2">
+                  <span className="text-[11.5px] text-bone-500">v:</span>
                   <input
                     type="number"
                     value={signalLightPx[1]}
@@ -1305,7 +1260,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                       const val = parseInt(e.target.value, 10) || 0;
                       setSignalLightPx([signalLightPx[0], val]);
                     }}
-                    className="w-full bg-zinc-950 px-1 rounded border border-zinc-700 text-zinc-200 text-right outline-none"
+                    className="w-full bg-asphalt-950 px-1 rounded border border-line-strong text-bone-200 text-right outline-none"
                   />
                 </div>
               </div>
@@ -1314,41 +1269,41 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
 
           {/* Dashcam Specific Controls (if active) */}
           {activeCameraMode === 'dashcam' && (
-            <div className="p-4 border-b border-zinc-800/80 bg-rose-950/10 space-y-3">
-              <div className="flex items-center space-x-2 text-rose-400">
+            <div className="p-4 border-b border-line bg-asphalt-850 space-y-3">
+              <div className="flex items-center space-x-2 text-signal-red">
                 <Camera className="w-4 h-4" />
-                <h3 className="text-xs font-semibold uppercase tracking-wider">
-                  Dashcam Ego-Motion Parameters
+                <h3 className="text-[12.5px] font-medium ">
+                  Dashcam parameters (stored, not yet used by the engine)
                 </h3>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+              <div className="grid grid-cols-2 gap-3 text-[12.5px]">
                 <div className="space-y-1">
-                  <span className="text-[10px] text-zinc-400 uppercase">Lane Width (m)</span>
+                  <span className="text-[11.5px] text-bone-400">Lane Width (m)</span>
                   <input
                     type="number"
                     step="0.1"
                     value={dashcamLaneWidth}
                     onChange={(e) => setDashcamLaneWidth(parseFloat(e.target.value) || 3.5)}
-                    className="w-full bg-zinc-900 px-2 py-1 rounded border border-zinc-800 text-zinc-200 outline-none"
+                    className="w-full bg-asphalt-850 px-2 py-1 rounded border border-line text-bone-200 outline-none"
                   />
                 </div>
                 <div className="space-y-1">
-                  <span className="text-[10px] text-zinc-400 uppercase">Camera Height (m)</span>
+                  <span className="text-[11.5px] text-bone-400">Camera Height (m)</span>
                   <input
                     type="number"
                     step="0.05"
                     value={dashcamCameraHeight}
                     onChange={(e) => setDashcamCameraHeight(parseFloat(e.target.value) || 1.3)}
-                    className="w-full bg-zinc-900 px-2 py-1 rounded border border-zinc-800 text-zinc-200 outline-none"
+                    className="w-full bg-asphalt-850 px-2 py-1 rounded border border-line text-bone-200 outline-none"
                   />
                 </div>
               </div>
 
-              <div className="space-y-1 text-xs font-mono">
+              <div className="space-y-1 text-[12.5px]">
                 <div className="flex justify-between">
-                  <span className="text-[10px] text-zinc-400 uppercase">Horizon Y Position</span>
-                  <span className="text-[10px] text-rose-400">{horizonY} px</span>
+                  <span className="text-[11.5px] text-bone-400">Horizon Y Position</span>
+                  <span className="text-[11.5px] text-signal-red">{horizonY} px</span>
                 </div>
                 <input
                   type="range"
@@ -1360,53 +1315,37 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
                     setHorizonY(y);
                     setVanishingPoint([vanishingPoint[0], y]);
                   }}
-                  className="w-full accent-rose-500"
+                  className="w-full accent-[#f2c037]"
                 />
               </div>
             </div>
           )}
 
-          {/* Action Buttons Footer */}
-          <div className="p-4 bg-zinc-900/60 border-t border-zinc-800 mt-auto flex items-center justify-between gap-3">
-            <div className="flex items-center space-x-2">
-              {onClose && (
-                <button
-                  onClick={onClose}
-                  className="px-3 py-2 rounded-lg text-xs font-mono font-medium text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-700 flex items-center space-x-1.5 transition-all"
+          {/* Actions */}
+          <div className="sticky bottom-0 mt-auto space-y-2 border-t border-line bg-asphalt-900 p-3">
+            {saveStatus === 'error' && saveError && <Notice tone="error">{saveError}</Notice>}
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1">
+                {onClose && <Button variant="ghost" size="sm" icon={<ArrowLeft className="h-3.5 w-3.5" />} onClick={onClose}>Back</Button>}
+                <Button variant="ghost" size="sm" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => loadPreset('synthetic')}>Reset</Button>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Button size="sm" busy={isSaving} disabled={!caseId && !onSave} icon={<Save className="h-3.5 w-3.5" />} onClick={handleSaveCalibration}
+                        title={caseId ? 'Save to the backend' : 'Pre-rendered scenarios cannot be saved'}>
+                  {saveStatus === 'saved' ? 'Saved' : 'Save'}
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={<Play className="h-3 w-3 fill-current" />}
+                  title={caseId ? 'Save, then run the pipeline' : 'Show the recorded pipeline run'}
+                  onClick={async () => {
+                    if (!caseId || (await handleSaveCalibration())) onRunPipeline?.();
+                  }}
                 >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Back</span>
-                </button>
-              )}
-              <button
-                onClick={() => loadPreset('synthetic')}
-                className="px-3 py-2 rounded-lg text-xs font-mono font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 border border-zinc-800 flex items-center space-x-1.5 transition-all"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset</span>
-              </button>
-            </div>
-
-            <div className="flex items-center space-x-2">
-              <button
-                onClick={handleSaveCalibration}
-                disabled={isSaving}
-                className="px-3.5 py-2 rounded-lg text-xs font-mono font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 flex items-center space-x-1.5 transition-all active:scale-95 disabled:opacity-50"
-              >
-                <Save className="w-3.5 h-3.5 text-zinc-300" />
-                <span>{isSaving ? 'Saving...' : saveStatus === 'saved' ? 'Saved!' : 'Save'}</span>
-              </button>
-
-              <button
-                onClick={async () => {
-                  await handleSaveCalibration();
-                  onRunPipeline?.();
-                }}
-                className="px-4 py-2 rounded-lg text-xs font-mono font-semibold bg-cyan-400 hover:bg-cyan-300 text-zinc-950 shadow-md shadow-cyan-950/40 flex items-center space-x-2 transition-all active:scale-95"
-              >
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>Run Pipeline</span>
-              </button>
+                  {caseId ? 'Run pipeline' : 'See pipeline run'}
+                </Button>
+              </div>
             </div>
           </div>
         </div>

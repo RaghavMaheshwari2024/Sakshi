@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { scaleLinear } from 'd3-scale';
-import { Gauge, Layers } from 'lucide-react';
 import { useCaseStore } from '../store/useCaseStore';
 import { Trajectory } from '../types/case';
-import { getTrackColor } from '../utils/colors';
+import { getTrackColor, IMPACT_COLOR, PAINT_COLOR, SIGNAL_COLORS } from '../utils/colors';
+import { Panel } from './ui';
+import { gsap, prefersReducedMotion, useGSAP } from '../lib/motion';
 
 interface SpeedChartPanelProps {
   className?: string;
@@ -115,15 +116,15 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
     return () => ro.disconnect();
   }, []);
 
-  const trajectories = useCaseStore((state) => state.caseData?.trajectories) || [];
+  const trajectories = useMemo(() => caseData?.trajectories ?? [], [caseData]);
 
   // Margins for axes, labels, and ticks
   const margin = useMemo(
     () => ({
-      top: 28,
-      right: 28,
-      bottom: 28,
-      left: 48,
+      top: 10,
+      right: 14,
+      bottom: 22,
+      left: 34,
     }),
     []
   );
@@ -201,18 +202,8 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
     const bFacts = caseData?.facts?.braking;
     if (!bFacts) return list;
 
-    if (Array.isArray(bFacts)) {
-      bFacts.forEach((item: any) => {
-        if (item && item.detected && typeof item.t === 'number') {
-          list.push({
-            trackId: item.track || item.track_id || 'vehicle',
-            t: item.t,
-            peakDecel: item.peak_decel_ms2,
-          });
-        }
-      });
-    } else if (typeof bFacts === 'object') {
-      Object.entries(bFacts).forEach(([trackId, val]: [string, any]) => {
+    if (typeof bFacts === 'object') {
+      Object.entries(bFacts).forEach(([trackId, val]) => {
         if (val && val.detected && typeof val.t === 'number') {
           list.push({
             trackId,
@@ -254,8 +245,6 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
 
       // 2. 90% confidence ribbon polygon points
       let polygonPoints = '';
-      let hiPath = '';
-      let loPath = '';
 
       if (traj.hi90_kmh && traj.lo90_kmh && traj.t.length > 0) {
         const upperPoints: string[] = [];
@@ -265,19 +254,12 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
           const x = xScale(traj.t[i]).toFixed(1);
           const yHi = yScale(traj.hi90_kmh[i] ?? traj.speed_kmh[i]).toFixed(1);
           upperPoints.push(`${x},${yHi}`);
-          hiPath += `${i === 0 ? 'M' : ' L'} ${x} ${yHi}`;
         }
 
         for (let i = traj.t.length - 1; i >= 0; i--) {
           const x = xScale(traj.t[i]).toFixed(1);
           const yLo = yScale(traj.lo90_kmh[i] ?? traj.speed_kmh[i]).toFixed(1);
           lowerPoints.push(`${x},${yLo}`);
-        }
-
-        for (let i = 0; i < traj.t.length; i++) {
-          const x = xScale(traj.t[i]).toFixed(1);
-          const yLo = yScale(traj.lo90_kmh[i] ?? traj.speed_kmh[i]).toFixed(1);
-          loPath += `${i === 0 ? 'M' : ' L'} ${x} ${yLo}`;
         }
 
         polygonPoints = [...upperPoints, ...lowerPoints].join(' ');
@@ -290,8 +272,6 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
         isDimmed,
         curvePath,
         polygonPoints,
-        hiPath,
-        loPath,
       };
     });
   }, [trajectories, selectedTrack, xScale, yScale]);
@@ -341,6 +321,16 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
     }
   };
 
+  // A new case draws its speed curves left to right, then the intervals settle in.
+  useGSAP(
+    () => {
+      if (prefersReducedMotion()) return;
+      gsap.from('.speed-band', { opacity: 0, duration: 0.5, delay: 0.5, ease: 'none', clearProps: 'opacity' });
+      gsap.from('.speed-curve', { drawSVG: '0%', duration: 0.9, delay: 0.12, ease: 'power2.inOut', clearProps: 'strokeDasharray,strokeDashoffset' });
+    },
+    { dependencies: [caseData], scope: containerRef },
+  );
+
   // Axis tick generators
   const yTicks = useMemo(() => yScale.ticks(5), [yScale]);
   const xTicks = useMemo(() => {
@@ -380,159 +370,75 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
   }, [trajectories, currentTime]);
 
   return (
-    <div
-      className={`bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 text-zinc-100 flex flex-col select-none relative backdrop-blur h-full ${className}`}
-    >
-      {/* Top Header: Panel Title, Units & Interactivity Legend */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-zinc-800/80 mb-2">
-        {/* Title & Units */}
-        <div className="flex items-center space-x-2.5">
-          <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-          <h2 className="text-xs font-semibold tracking-wide uppercase text-zinc-200">
-            Kinematic Telemetry (Speed & Uncertainty)
-          </h2>
-          <span className="text-[11px] font-mono text-zinc-400 px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800">
-            km/h vs Time (s)
-          </span>
-        </div>
-
-        {/* Legend & Confidence Ribbon Toggle */}
-        <div className="flex items-center space-x-3">
-          {/* Track Filter Pills */}
-          <div className="flex items-center space-x-1">
-            {trajectories.map((traj) => {
-              const isSelected = selectedTrack === traj.track;
-              const isDimmed = selectedTrack !== null && !isSelected;
-              const color = getTrackColor(traj.track);
-              return (
-                <button
-                  key={traj.track}
-                  onClick={() => setSelectedTrack(traj.track)}
-                  className={`flex items-center space-x-1.5 px-2 py-0.5 rounded text-[11px] font-mono transition-all duration-150 active:scale-95 ${
-                    isSelected
-                      ? 'bg-zinc-800 ring-1 ring-zinc-500 text-zinc-100 shadow-sm'
-                      : isDimmed
-                      ? 'bg-zinc-900/50 text-zinc-500 hover:text-zinc-300'
-                      : 'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300'
-                  }`}
-                  title={isSelected ? `Clear filter` : `Filter view to ${traj.track}`}
-                >
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: color }}
-                  />
-                  <span>{traj.track}</span>
-                </button>
-              );
-            })}
-            {selectedTrack && (
-              <button
-                onClick={() => setSelectedTrack(null)}
-                className="text-[10px] text-zinc-400 hover:text-zinc-200 font-mono px-1 py-0.5"
-                title="Reset track filter"
-              >
-                (Reset)
-              </button>
-            )}
-          </div>
-
-          <div className="h-3 w-[1px] bg-zinc-800" />
-
-          {/* 90% Confidence Band Toggle */}
+    <Panel
+      title="Speed"
+      meta="km/h with 90% interval"
+      className={`h-full select-none ${className}`}
+      bodyClassName="flex flex-col"
+      actions={
+        <>
+          {selectedTrack && (
+            <button onClick={() => setSelectedTrack(null)} className="px-1 text-[12px] text-bone-400 hover:text-bone" title="Clear the vehicle filter">
+              Clear filter
+            </button>
+          )}
           <button
             onClick={() => toggleConfidenceBands?.()}
-            className={`flex items-center space-x-1.5 px-2 py-0.5 rounded text-[11px] font-mono font-medium transition-all duration-150 active:scale-95 border ${
-              showConfidenceBands
-                ? 'bg-cyan-950/60 border-cyan-800 text-cyan-300 shadow-sm shadow-cyan-950'
-                : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+            aria-pressed={showConfidenceBands}
+            title="Show or hide the 90% intervals"
+            className={`inline-flex h-6 items-center rounded-[3px] px-1.5 text-[12px] transition-colors ${
+              showConfidenceBands ? 'bg-asphalt-700 text-bone' : 'text-bone-400 hover:text-bone'
             }`}
-            title="Toggle 90% Confidence Interval Ribbons"
           >
-            <Layers className="w-3.5 h-3.5 shrink-0" />
-            <span>90% CI Bands</span>
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                showConfidenceBands ? 'bg-cyan-400' : 'bg-zinc-600'
-              }`}
-            />
+            90% band
           </button>
-        </div>
-      </div>
-
-      {/* Telemetry Readout Header Strip */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 py-1.5 px-2.5 bg-zinc-900/60 rounded border border-zinc-800/80 mb-2">
-        <div className="text-[11px] uppercase tracking-wider text-zinc-400 font-mono font-medium flex items-center space-x-1.5 shrink-0">
-          <Gauge className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Telemetry @ t = {currentTime.toFixed(2)}s (frame #{currentFrame}):</span>
-        </div>
-
+        </>
+      }
+    >
+      {/* What each vehicle is doing at the playhead */}
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-line px-3 py-1 text-[12px]">
+        <span className="measured text-bone-500">t = {currentTime.toFixed(2)} s · #{currentFrame}</span>
         {activeTelemetries.length === 0 ? (
-          <span className="text-xs font-mono text-zinc-500 italic">No trajectories tracked</span>
+          <span className="text-bone-500">No trajectories tracked</span>
         ) : (
           activeTelemetries.map((item) => {
             const isSelected = selectedTrack === item.track;
             const isDimmed = selectedTrack !== null && !isSelected;
             return (
-              <div
+              <button
                 key={item.track}
                 onClick={() => setSelectedTrack(item.track)}
-                className={`flex items-center space-x-1.5 text-xs font-mono px-2 py-0.5 rounded cursor-pointer transition-all duration-150 active:scale-95 ${
-                  isSelected
-                    ? 'bg-zinc-800 text-zinc-100 ring-1 ring-zinc-600'
-                    : isDimmed
-                    ? 'opacity-40 text-zinc-500 hover:opacity-80'
-                    : 'text-zinc-300 hover:bg-zinc-800/60'
+                aria-pressed={isSelected}
+                title={isSelected ? 'Clear filter' : `Filter to ${item.track}`}
+                className={`measured inline-flex items-center gap-1.5 rounded-[3px] px-1 transition-colors ${
+                  isSelected ? 'bg-asphalt-700 text-bone' : isDimmed ? 'text-bone-500' : 'text-bone-200 hover:bg-asphalt-800'
                 }`}
-                title={`Click to filter on ${item.track}`}
               >
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: item.color }}
-                />
-                <span className="font-semibold" style={{ color: item.color }}>
-                  {item.track}:
-                </span>
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+                <span className="text-bone-400">{item.track}</span>
                 {item.inRange ? (
-                  <span className="tabular-nums">
-                    <span className="font-bold text-zinc-100">{item.speed.toFixed(1)} km/h</span>{' '}
-                    <span className="text-zinc-400 text-[11px]">
-                      ({item.lo90.toFixed(1)}–{item.hi90.toFixed(1)}, 90%)
-                    </span>
+                  <span>
+                    {item.speed.toFixed(1)}{' '}
+                    <span className="text-bone-500">({item.lo90.toFixed(1)}–{item.hi90.toFixed(1)})</span>
                   </span>
                 ) : (
-                  <span className="text-zinc-500 italic text-[11px]">-- km/h (out of frame)</span>
+                  <span className="text-bone-500">out of frame</span>
                 )}
-              </div>
+              </button>
             );
           })
         )}
-      </div>
-
-      {/* Claim Highlight Window Banner (When active) */}
-      {highlightWindow && (
-        <div className="flex items-center justify-between px-3 py-1 mb-2 rounded bg-cyan-950/40 border border-cyan-800/60 text-xs font-mono animate-in fade-in duration-200">
-          <div className="flex items-center space-x-2">
-            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-            <span className="text-cyan-300 font-semibold tracking-wide">
-              CLAIM INSPECTION WINDOW: {highlightWindow.t0.toFixed(2)}s –{' '}
-              {highlightWindow.t1.toFixed(2)}s
-            </span>
-            {highlightWindow.reason && (
-              <span className="text-zinc-400 font-sans text-[11px] truncate max-w-sm">
-                • {highlightWindow.reason}
-              </span>
-            )}
-          </div>
-          <span className="text-[10px] text-cyan-400/80">
-            Δt = {(highlightWindow.t1 - highlightWindow.t0).toFixed(2)}s
+        {highlightWindow && (
+          <span className="measured ml-auto text-paint" title={highlightWindow.reason}>
+            window {highlightWindow.t0.toFixed(2)}–{highlightWindow.t1.toFixed(2)} s
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Main SVG Chart Container */}
       <div
         ref={containerRef}
-        className="relative w-full flex-1 min-h-[190px] bg-zinc-950/80 rounded border border-zinc-800/90 overflow-hidden cursor-crosshair"
+        className="relative min-h-0 w-full flex-1 cursor-crosshair overflow-hidden"
       >
         <svg
           ref={svgRef}
@@ -567,16 +473,15 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                   x2={margin.left + innerWidth}
                   y1={y}
                   y2={y}
-                  stroke="#27272a"
-                  strokeDasharray="3 3"
+                  stroke="rgba(237,234,227,0.07)"
                   strokeWidth={1}
                 />
                 <text
                   x={margin.left - 8}
                   y={y + 3.5}
                   textAnchor="end"
-                  fill="#71717a"
-                  className="font-mono text-[10px] select-none"
+                  fill="#85837c"
+                  className="select-none font-mono text-[10.5px]"
                 >
                   {tick}
                 </text>
@@ -594,19 +499,17 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                   x2={x}
                   y1={margin.top}
                   y2={margin.top + innerHeight}
-                  stroke="#27272a"
-                  strokeDasharray="2 4"
+                  stroke="rgba(237,234,227,0.04)"
                   strokeWidth={1}
-                  strokeOpacity={0.6}
                 />
                 <text
                   x={x}
                   y={margin.top + innerHeight + 16}
                   textAnchor="middle"
-                  fill="#71717a"
-                  className="font-mono text-[10px] select-none"
+                  fill="#85837c"
+                  className="select-none font-mono text-[10.5px]"
                 >
-                  {tick.toFixed(1)}s
+                  {tick.toFixed(1)}
                 </text>
               </g>
             );
@@ -622,10 +525,7 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
               const x1 = Math.min(margin.left + innerWidth, xScale(t1));
               const w = Math.max(0, x1 - x0);
 
-              let fillColor = '#52525b';
-              if (sig.state === 'green') fillColor = '#10b981';
-              if (sig.state === 'red') fillColor = '#f43f5e';
-              if (sig.state === 'amber') fillColor = '#f59e0b';
+              const fillColor = SIGNAL_COLORS[sig.state] ?? SIGNAL_COLORS.off;
 
               return (
                 <rect
@@ -649,11 +549,8 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                 y={margin.top}
                 width={highlightRect.width}
                 height={innerHeight}
-                fill="#06b6d4"
-                fillOpacity={0.12}
-                stroke="#06b6d4"
-                strokeWidth={1}
-                strokeDasharray="4 2"
+                fill={PAINT_COLOR}
+                fillOpacity={0.1}
               />
             </g>
           )}
@@ -663,34 +560,15 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
             {/* 1. Shaded 90% Confidence Ribbons */}
             {showConfidenceBands &&
               trajectoryRenderData.map(
-                ({ traj, trackColor, isDimmed, polygonPoints, hiPath, loPath }) => {
+                ({ traj, trackColor, isDimmed, polygonPoints }) => {
                   if (!polygonPoints) return null;
                   return (
                     <g key={`ci-${traj.track}`}>
                       <polygon
                         points={polygonPoints}
                         fill={trackColor}
-                        fillOpacity={isDimmed ? 0.04 : 0.15}
-                        className="transition-opacity duration-200 pointer-events-none"
-                      />
-                      {/* Ribbon envelope boundary dashes */}
-                      <path
-                        d={hiPath}
-                        fill="none"
-                        stroke={trackColor}
-                        strokeWidth={0.75}
-                        strokeOpacity={isDimmed ? 0.08 : 0.25}
-                        strokeDasharray="2 2"
-                        className="pointer-events-none"
-                      />
-                      <path
-                        d={loPath}
-                        fill="none"
-                        stroke={trackColor}
-                        strokeWidth={0.75}
-                        strokeOpacity={isDimmed ? 0.08 : 0.25}
-                        strokeDasharray="2 2"
-                        className="pointer-events-none"
+                        fillOpacity={isDimmed ? 0.04 : 0.13}
+                        className="speed-band pointer-events-none transition-opacity duration-200"
                       />
                     </g>
                   );
@@ -707,11 +585,11 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                     d={curvePath}
                     fill="none"
                     stroke={trackColor}
-                    strokeWidth={isSelected ? 2.5 : 2}
+                    strokeWidth={isSelected ? 2 : 1.5}
                     strokeOpacity={isDimmed ? 0.2 : 0.95}
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="transition-all duration-200 pointer-events-none"
+                    className="speed-curve pointer-events-none"
                   />
                 );
               }
@@ -742,28 +620,9 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                   strokeDasharray="2 2"
                   strokeOpacity={0.8}
                 />
-                <g transform={`translate(${bx}, ${margin.top + innerHeight - 16})`}>
-                  <rect
-                    x={-34}
-                    y={0}
-                    width={68}
-                    height={14}
-                    rx={2}
-                    fill="#18181b"
-                    fillOpacity={0.92}
-                    stroke={trackColor}
-                    strokeWidth={0.8}
-                  />
-                  <text
-                    x={0}
-                    y={10}
-                    textAnchor="middle"
-                    fill={trackColor}
-                    className="text-[8.5px] font-mono font-bold"
-                  >
-                    🛑 BRAKE {b.t.toFixed(1)}s
-                  </text>
-                </g>
+                <text x={bx + 4} y={margin.top + innerHeight - 5} fill={trackColor} className="font-mono text-[10.5px]">
+                  brake {b.t.toFixed(2)}
+                </text>
               </g>
             );
           })}
@@ -781,40 +640,16 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                     jumpToTime(impactEvent.t);
                   }}
                 >
-                  {/* Dashed Red Line */}
-                  <line
-                    x1={ix}
-                    y1={margin.top}
-                    x2={ix}
-                    y2={margin.top + innerHeight}
-                    stroke="#f43f5e"
-                    strokeWidth={1.5}
-                    strokeDasharray="4 3"
-                  />
-
-                  {/* Top Impact Badge */}
-                  <g transform={`translate(${ix}, ${margin.top + 2})`}>
-                    <rect
-                      x={-60}
-                      y={0}
-                      width={120}
-                      height={18}
-                      rx={3}
-                      fill="#4c0519"
-                      fillOpacity={0.95}
-                      stroke="#f43f5e"
-                      strokeWidth={1}
-                    />
-                    <text
-                      x={0}
-                      y={12.5}
-                      textAnchor="middle"
-                      fill="#fecdd3"
-                      className="text-[9.5px] font-mono font-bold tracking-tight select-none"
-                    >
-                      💥 IMPACT (t = {impactEvent.t.toFixed(2)}s)
-                    </text>
-                  </g>
+                  <line x1={ix} y1={margin.top} x2={ix} y2={margin.top + innerHeight} stroke={IMPACT_COLOR} strokeWidth={1.5} />
+                  <text
+                    x={ix - 5}
+                    y={margin.top + 11}
+                    textAnchor="end"
+                    fill={IMPACT_COLOR}
+                    className="select-none font-mono text-[10.5px]"
+                  >
+                    impact {impactEvent.t.toFixed(2)}
+                  </text>
                 </g>
               );
             })()
@@ -829,15 +664,8 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                 y1={margin.top}
                 x2={playheadX}
                 y2={margin.top + innerHeight}
-                stroke="#ffffff"
-                strokeWidth={1.5}
-                className="drop-shadow-[0_0_5px_rgba(255,255,255,0.7)]"
-              />
-
-              {/* Top pointer marker */}
-              <polygon
-                points={`${playheadX - 4},${margin.top - 2} ${playheadX + 4},${margin.top - 2} ${playheadX},${margin.top + 5}`}
-                fill="#ffffff"
+                stroke={PAINT_COLOR}
+                strokeWidth={1}
               />
 
               {/* Exact Speed Points on Playhead */}
@@ -853,10 +681,9 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                     cy={cy}
                     r={isSelected ? 4.5 : 3.5}
                     fill={item.color}
-                    stroke="#ffffff"
+                    stroke="#0f1012"
                     strokeWidth={1.5}
                     opacity={isDimmed ? 0.25 : 1}
-                    className="drop-shadow-[0_0_4px_rgba(0,0,0,0.8)]"
                   />
                 );
               })}
@@ -871,10 +698,8 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                 y1={margin.top}
                 x2={hoverState.x}
                 y2={margin.top + innerHeight}
-                stroke="#38bdf8"
+                stroke="rgba(237,234,227,0.3)"
                 strokeWidth={1}
-                strokeDasharray="2 2"
-                strokeOpacity={0.6}
               />
             </g>
           )}
@@ -883,15 +708,15 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
         {/* Floating Tooltip when hovering over chart */}
         {hoverState && !isScrubbing && (
           <div
-            className="absolute pointer-events-none z-30 bg-zinc-900/95 border border-zinc-700/80 rounded shadow-2xl p-2.5 text-xs backdrop-blur font-mono"
+            className="measured pointer-events-none absolute z-30 rounded border border-line-strong bg-asphalt-800 px-2 py-1.5 text-[12px]"
             style={{
-              left: Math.min(hoverState.x + 12, dimensions.width - 240),
+              left: Math.max(4, Math.min(hoverState.x + 12, dimensions.width - 230)),
               top: Math.max(margin.top + 6, 12),
             }}
           >
-            <div className="text-[11px] text-zinc-400 border-b border-zinc-800 pb-1 mb-1.5 flex items-center justify-between space-x-3">
-              <span>Time: <span className="text-cyan-400 font-bold">{hoverState.t.toFixed(2)}s</span></span>
-              <span className="text-[9.5px] text-zinc-500">Click to seek</span>
+            <div className="mb-1 flex items-center justify-between gap-3 text-bone-400">
+              <span className="text-bone">{hoverState.t.toFixed(2)} s</span>
+              <span className="font-sans text-[11px]">Click to seek</span>
             </div>
 
             {trajectories.map((traj) => {
@@ -900,24 +725,18 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
               return (
                 <div
                   key={`hover-item-${traj.track}`}
-                  className="flex items-center justify-between space-x-3 text-[11px] py-0.5"
+                  className="flex items-center justify-between gap-3"
                 >
-                  <span className="flex items-center space-x-1.5">
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ backgroundColor: color }}
-                    />
-                    <span style={{ color }}>{traj.track}:</span>
+                  <span className="flex items-center gap-1.5 text-bone-400">
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                    {traj.track}
                   </span>
                   {d.inRange ? (
-                    <span className="tabular-nums">
-                      <span className="font-semibold text-zinc-100">{d.speed.toFixed(1)} km/h</span>{' '}
-                      <span className="text-zinc-400 text-[10px]">
-                        ({d.lo90.toFixed(1)}–{d.hi90.toFixed(1)}, 90%)
-                      </span>
+                    <span>
+                      {d.speed.toFixed(1)} <span className="text-bone-500">({d.lo90.toFixed(1)}–{d.hi90.toFixed(1)})</span>
                     </span>
                   ) : (
-                    <span className="text-zinc-500 italic text-[10px]">-- (out of frame)</span>
+                    <span className="text-bone-500">out of frame</span>
                   )}
                 </div>
               );
@@ -926,11 +745,6 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
         )}
       </div>
 
-      {/* Axis & Subtitle Footer Notice */}
-      <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono mt-1.5 px-1">
-        <span>Click or drag across the chart to scrub playback</span>
-        <span>90% CI calculated via RTS Kalman smoother & photogrammetry homography</span>
-      </div>
-    </div>
+    </Panel>
   );
 };

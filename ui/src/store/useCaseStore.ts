@@ -15,6 +15,10 @@ interface CaseStoreState {
   highlightWindow: { t0: number; t1: number; reason?: string } | null;
   /** The pre-rendered scenario on screen (null for an uploaded / mock case). */
   scenarioId: string | null;
+  /** The backend case on screen (null for a pre-rendered scenario). */
+  backendCaseId: string | null;
+  /** Which reconstruction the workspace shows. */
+  reconView: 'top' | '3d';
 
   // Actions
   loadCase: (data: CaseData, videoUrl?: string) => void;
@@ -32,6 +36,8 @@ interface CaseStoreState {
   setReplayMode: (mode: "road" | "ego") => void;
   clearHighlight: () => void;
   setScenarioId: (id: string | null) => void;
+  setBackendCaseId: (id: string | null) => void;
+  setReconView: (view: 'top' | '3d') => void;
 }
 
 export const useCaseStore = create<CaseStoreState>((set, get) => ({
@@ -47,6 +53,8 @@ export const useCaseStore = create<CaseStoreState>((set, get) => ({
   replayMode: 'road',
   highlightWindow: null,
   scenarioId: null,
+  backendCaseId: null,
+  reconView: 'top',
 
   loadCase: (data, videoUrl) => {
     const t0 = data.clock?.frames?.[0]?.t ?? 0;
@@ -108,7 +116,9 @@ export const useCaseStore = create<CaseStoreState>((set, get) => ({
   setReplayMode: (mode) => set({ replayMode: mode }),
   clearHighlight: () => set({ highlightWindow: null }),
   setScenarioId: (id) => set({ scenarioId: id }),
+  setBackendCaseId: (id) => set({ backendCaseId: id }),
+  setReconView: (view) => set({ reconView: view }),
 }));
 
 // Dev only: lets browser tests drive the playhead.
-if (import.meta.env.DEV) (window as any).sakshiStore = useCaseStore;
+if (import.meta.env.DEV) (window as unknown as { sakshiStore: typeof useCaseStore }).sakshiStore = useCaseStore;

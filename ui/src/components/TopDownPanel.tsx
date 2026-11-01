@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { Navigation, Layers, Crosshair, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import { IconButton, Segmented } from './ui';
 import { useCaseStore } from '../store/useCaseStore';
 import { getTrackColor } from '../utils/colors';
 import { Trajectory } from '../types/case';
@@ -169,13 +170,6 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
       }
     }
 
-    // Calibration ground points
-    if (caseData?.calibration?.ground_pts_m) {
-      for (const pt of caseData.calibration.ground_pts_m) {
-        includePoint(pt[0], pt[1]);
-      }
-    }
-
     // Stop line coordinates
     if (caseData?.calibration?.stop_line_m) {
       for (const pt of caseData.calibration.stop_line_m) {
@@ -197,7 +191,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
     }
 
     // Margin padding in metres around the bounding box
-    const pad = 6.0;
+    const pad = 9.0;
     const paddedMinX = minX - pad;
     const paddedMaxX = maxX + pad;
     const paddedMinY = minY - pad;
@@ -209,11 +203,14 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
     // Grid spacing (5m if span is under 60m, else 10m)
     const maxSpan = Math.max(width, height);
     const gridStep = maxSpan > 60 ? 10 : 5;
+    // Marks are sized in metres; this keeps labels readable in a large scene.
+    const u = maxSpan / 34;
 
-    const startX = Math.floor(paddedMinX / gridStep) * gridStep;
-    const endX = Math.ceil(paddedMaxX / gridStep) * gridStep;
-    const startY = Math.floor(paddedMinY / gridStep) * gridStep;
-    const endY = Math.ceil(paddedMaxY / gridStep) * gridStep;
+    // The sheet runs past the frame, so it fills the panel at any aspect ratio.
+    const startX = Math.floor((paddedMinX - maxSpan) / gridStep) * gridStep;
+    const endX = Math.ceil((paddedMaxX + maxSpan) / gridStep) * gridStep;
+    const startY = Math.floor((paddedMinY - maxSpan) / gridStep) * gridStep;
+    const endY = Math.ceil((paddedMaxY + maxSpan) / gridStep) * gridStep;
 
     const verticalLines: number[] = [];
     for (let gx = startX; gx <= endX; gx += gridStep) {
@@ -226,7 +223,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
     }
 
     // Graph paper: fine lines every metre (2 m on very large scenes) between the labelled ones.
-    const minorStep = maxSpan > 120 ? 2 : 1;
+    const minorStep = maxSpan > 60 ? 5 : 1;
     const minorX: number[] = [];
     for (let gx = startX; gx <= endX; gx += minorStep) if (gx % gridStep !== 0) minorX.push(gx);
     const minorY: number[] = [];
@@ -240,6 +237,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
         maxY: paddedMaxY,
         width,
         height,
+        u,
       },
       roadGrid: {
         gridStep,
@@ -326,95 +324,25 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
   const impactEvent = caseData?.facts?.impact || null;
 
   return (
-    <div
-      className={`relative flex flex-col h-full bg-zinc-950/70 border border-zinc-800 rounded-lg overflow-hidden text-zinc-100 select-none ${className}`}
-    >
-      {/* Panel Header */}
-      <div className="flex items-center justify-between px-3.5 py-2.5 bg-zinc-900/60 border-b border-zinc-800/80 backdrop-blur z-20">
-        <div className="flex items-center space-x-2.5">
-          <Layers className="w-4 h-4 text-cyan-400" />
-          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-200 font-mono">
-            Top-Down Kinematics Replay
-          </span>
-
-          {/* Active Mode Badge */}
-          <div
-            className={`flex items-center space-x-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-medium border ${
-              isEgoMode
-                ? 'bg-cyan-950/80 text-cyan-300 border-cyan-700/60'
-                : 'bg-zinc-800 text-zinc-300 border-zinc-700/60'
-            }`}
-          >
-            {isEgoMode && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />}
-            <span>{isEgoMode ? 'Car-Centred (Dashcam)' : 'Road-Fixed'}</span>
-          </div>
-        </div>
-
-        {/* Header Actions: Mode Toggle & Zoom Controls */}
-        <div className="flex items-center space-x-1.5">
-          {/* Segmented Mode Switcher */}
-          <div className="flex items-center p-0.5 rounded bg-zinc-950 border border-zinc-800 text-[11px] font-mono">
-            <button
-              type="button"
-              onClick={() => setReplayMode('road')}
-              className={`px-2 py-1 rounded transition-all active:scale-[0.98] ${
-                !isEgoMode
-                  ? 'bg-zinc-800 text-zinc-100 font-semibold shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-              title="Road-Fixed junction frame"
-            >
-              Road-Fixed
-            </button>
-            <button
-              type="button"
-              onClick={() => setReplayMode('ego')}
-              className={`flex items-center space-x-1 px-2 py-1 rounded transition-all active:scale-[0.98] ${
-                isEgoMode
-                  ? 'bg-cyan-950 text-cyan-300 font-semibold shadow-sm border border-cyan-700/50'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-              title="Vehicle-centered dashcam frame"
-            >
-              <Navigation className="w-3 h-3" />
-              <span>Car-Centred</span>
-            </button>
-          </div>
-
-          <div className="h-4 w-[1px] bg-zinc-800 mx-0.5" />
-
-          {/* Zoom In/Out/Reset */}
-          <button
-            type="button"
-            onClick={() => setZoomLevel((z) => Math.min(2.5, z + 0.25))}
-            className="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/80 active:scale-95 transition-all"
-            title="Zoom In"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoomLevel((z) => Math.max(0.6, z - 0.25))}
-            className="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/80 active:scale-95 transition-all"
-            title="Zoom Out"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-          {zoomLevel !== 1.0 && (
-            <button
-              type="button"
-              onClick={() => setZoomLevel(1.0)}
-              className="p-1 rounded text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800/80 active:scale-95 transition-all"
-              title="Reset Zoom"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+    <div className={`relative h-full w-full select-none overflow-hidden bg-asphalt-950 ${className}`}>
+      {/* View controls float over the sheet */}
+      <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded bg-asphalt-900/90 p-0.5">
+        <Segmented
+          label="Reference frame"
+          value={replayMode}
+          onChange={setReplayMode}
+          options={[
+            { value: 'road', label: 'Road', title: 'Road-fixed junction frame' },
+            { value: 'ego', label: 'Car', title: 'Centred on the selected vehicle' },
+          ]}
+        />
+        <IconButton label="Zoom in" onClick={() => setZoomLevel((z) => Math.min(2.5, z + 0.25))}><ZoomIn className="h-3.5 w-3.5" /></IconButton>
+        <IconButton label="Zoom out" onClick={() => setZoomLevel((z) => Math.max(0.6, z - 0.25))}><ZoomOut className="h-3.5 w-3.5" /></IconButton>
+        {zoomLevel !== 1.0 && (
+          <IconButton label="Reset zoom" onClick={() => setZoomLevel(1.0)}><RotateCcw className="h-3.5 w-3.5" /></IconButton>
+        )}
       </div>
 
-      {/* Main SVG Orthographic Viewport */}
-      <div className="relative flex-1 w-full h-full overflow-hidden bg-[#0c0d11]">
         <svg
           className="w-full h-full cursor-crosshair"
           viewBox={viewBox}
@@ -426,31 +354,20 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
             }
           }}
         >
-          <defs>
-            {/* Pulsing glow filter for impact marker */}
-            <filter id="impact-glow" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur in="SourceGraphic" stdDeviation="0.4" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          </defs>
-
           {/* World Layer: Handles Car-Centred Rotation and Translation */}
           <g transform={worldTransform}>
             {/* Road Grid Lines & Coordinates */}
             <g id="road-grid-layer" className="pointer-events-none opacity-90">
               {/* Graph paper: the sheet, then the fine 1 m lines */}
               <rect x={roadGrid.startX} y={-roadGrid.endY} width={roadGrid.endX - roadGrid.startX}
-                    height={roadGrid.endY - roadGrid.startY} fill="#0f1218" />
+                    height={roadGrid.endY - roadGrid.startY} fill="#111214" />
               {roadGrid.minorX.map((gx) => (
                 <line key={`mx-${gx}`} x1={gx} y1={-roadGrid.startY} x2={gx} y2={-roadGrid.endY}
-                      stroke="#22333d" strokeWidth={0.09} />
+                      stroke="#1d1e21" strokeWidth={0.09 * bounds.u} />
               ))}
               {roadGrid.minorY.map((gy) => (
                 <line key={`my-${gy}`} x1={roadGrid.startX} y1={-gy} x2={roadGrid.endX} y2={-gy}
-                      stroke="#22333d" strokeWidth={0.09} />
+                      stroke="#1d1e21" strokeWidth={0.09 * bounds.u} />
               ))}
               {/* Vertical Grid Lines (Constant X) */}
               {roadGrid.verticalLines.map((gx) => {
@@ -462,20 +379,20 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                       y1={-roadGrid.startY}
                       x2={gx}
                       y2={-roadGrid.endY}
-                      stroke={isAxis ? '#5b7787' : '#3d5a6a'}
-                      strokeWidth={isAxis ? 0.2 : 0.15}
+                      stroke={isAxis ? '#46474c' : '#2e2f33'}
+                      strokeWidth={(isAxis ? 0.16 : 0.1) * bounds.u}
                     />
                     {/* Tick Label */}
                     <text
                       x={gx}
-                      y={-bounds.minY - 0.6}
-                      fill={isAxis ? '#d4d4d8' : '#8b9aa6'}
-                      fontSize="0.75"
-                      fontFamily="JetBrains Mono, monospace"
+                      y={-bounds.minY - 0.4 * bounds.u}
+                      fill={isAxis ? '#d3d0c8' : '#85837c'}
+                      fontSize={0.62 * bounds.u}
+                      fontFamily="IBM Plex Mono, monospace"
                       textAnchor="middle"
-                      transform={`rotate(${counterRotationDeg}, ${gx}, ${-bounds.minY - 0.6})`}
+                      transform={`rotate(${counterRotationDeg}, ${gx}, ${-bounds.minY - 0.4 * bounds.u})`}
                     >
-                      {gx > 0 ? `+${gx}m` : `${gx}m`}
+                      {gx} m
                     </text>
                   </g>
                 );
@@ -492,37 +409,25 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                       y1={svgY}
                       x2={roadGrid.endX}
                       y2={svgY}
-                      stroke={isAxis ? '#5b7787' : '#3d5a6a'}
-                      strokeWidth={isAxis ? 0.2 : 0.15}
+                      stroke={isAxis ? '#46474c' : '#2e2f33'}
+                      strokeWidth={(isAxis ? 0.16 : 0.1) * bounds.u}
                     />
                     {/* Tick Label */}
                     <text
                       x={bounds.minX + 0.8}
                       y={svgY + 0.25}
-                      fill={isAxis ? '#d4d4d8' : '#8b9aa6'}
-                      fontSize="0.75"
-                      fontFamily="JetBrains Mono, monospace"
+                      fill={isAxis ? '#d3d0c8' : '#85837c'}
+                      fontSize={0.62 * bounds.u}
+                      fontFamily="IBM Plex Mono, monospace"
                       textAnchor="start"
                       transform={`rotate(${counterRotationDeg}, ${bounds.minX + 0.8}, ${svgY + 0.25})`}
                     >
-                      {gy > 0 ? `+${gy}m` : `${gy}m`}
+                      {gy} m
                     </text>
                   </g>
                 );
               })}
 
-              {/* Origin Marker */}
-              <circle cx={0} cy={0} r={0.3} fill="#71717a" opacity={0.6} />
-              <text
-                x={0.6}
-                y={-0.6}
-                fill="#71717a"
-                fontSize="0.65"
-                fontFamily="JetBrains Mono, monospace"
-                transform={`rotate(${counterRotationDeg}, 0.6, -0.6)`}
-              >
-                (0,0)
-              </text>
             </g>
 
             {/* Calibration Survey Points (Control points) */}
@@ -538,7 +443,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         y1={py}
                         x2={px + 0.4}
                         y2={py}
-                        stroke="#52525b"
+                        stroke="#46474c"
                         strokeWidth="0.06"
                       />
                       <line
@@ -546,10 +451,10 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         y1={py - 0.4}
                         x2={px}
                         y2={py + 0.4}
-                        stroke="#52525b"
+                        stroke="#46474c"
                         strokeWidth="0.06"
                       />
-                      <circle cx={px} cy={py} r="0.12" fill="none" stroke="#71717a" strokeWidth="0.05" />
+                      <circle cx={px} cy={py} r="0.12" fill="none" stroke="#85837c" strokeWidth="0.05" />
                     </g>
                   );
                 })}
@@ -566,8 +471,8 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                   x2={stopLine[1][0]}
                   y2={-stopLine[1][1]}
                   stroke="#ffffff"
-                  strokeWidth="0.45"
-                  strokeDasharray="0.8 0.4"
+                  strokeWidth={0.32 * bounds.u}
+                  strokeDasharray={`${0.8 * bounds.u} ${0.4 * bounds.u}`}
                   strokeLinecap="butt"
                   opacity={0.9}
                 />
@@ -585,16 +490,16 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                   // Normal offset vector perpendicular to the line
                   const nx = -dy / len;
                   const ny = dx / len;
-                  const labelX = midX + nx * 1.2;
-                  const labelY = midY + ny * 1.2;
+                  const labelX = midX + nx * 1.6 * bounds.u;
+                  const labelY = midY + ny * 1.6 * bounds.u;
 
                   return (
                     <text
                       x={labelX}
                       y={labelY}
-                      fill="#e4e4e7"
-                      fontSize="0.75"
-                      fontFamily="JetBrains Mono, monospace"
+                      fill="#edeae3"
+                      fontSize={0.62 * bounds.u}
+                      fontFamily="IBM Plex Mono, monospace"
                       fontWeight="600"
                       textAnchor="middle"
                       opacity={0.85}
@@ -653,8 +558,8 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                       d={fullPathD}
                       fill="none"
                       stroke={color}
-                      strokeWidth={isSelected ? '0.22' : '0.12'}
-                      strokeDasharray="0.6 0.6"
+                      strokeWidth={(isSelected ? 0.16 : 0.1) * bounds.u}
+                      strokeDasharray={`${0.5 * bounds.u} ${0.5 * bounds.u}`}
                       opacity={0.4}
                     />
 
@@ -664,7 +569,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         d={pastPathD}
                         fill="none"
                         stroke={color}
-                        strokeWidth={isSelected ? '0.32' : '0.2'}
+                        strokeWidth={(isSelected ? 0.3 : 0.2) * bounds.u}
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         opacity={0.9}
@@ -680,8 +585,8 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                           key={`pt-${traj.track}-${idx}`}
                           cx={xVal}
                           cy={-traj.y[idx]}
-                          r={isSelected ? 0.16 : 0.1}
-                          fill={isPast ? color : '#3f3f46'}
+                          r={(isSelected ? 0.16 : 0.1) * bounds.u}
+                          fill={isPast ? color : '#46474c'}
                           opacity={isPast ? 0.8 : 0.4}
                         />
                       );
@@ -701,81 +606,15 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                   jumpToTime(impactEvent.t);
                 }}
               >
-                {/* Pulsing ring at impact coordinate */}
-                <circle
-                  cx={impactEvent.xy[0]}
-                  cy={-impactEvent.xy[1]}
-                  r="2.2"
-                  stroke="#f43f5e"
-                  strokeWidth="0.08"
-                  strokeDasharray="0.4 0.3"
-                  fill="none"
-                  opacity={0.7}
-                  className="animate-pulse"
-                />
-                <circle
-                  cx={impactEvent.xy[0]}
-                  cy={-impactEvent.xy[1]}
-                  r="1.2"
-                  stroke="#f43f5e"
-                  strokeWidth="0.16"
-                  fill="#f43f5e"
-                  fillOpacity={0.12}
-                />
-
-                {/* Marker 'X' */}
-                <line
-                  x1={impactEvent.xy[0] - 0.75}
-                  y1={-impactEvent.xy[1] - 0.75}
-                  x2={impactEvent.xy[0] + 0.75}
-                  y2={-impactEvent.xy[1] + 0.75}
-                  stroke="#f43f5e"
-                  strokeWidth="0.28"
-                  strokeLinecap="round"
-                />
-                <line
-                  x1={impactEvent.xy[0] - 0.75}
-                  y1={-impactEvent.xy[1] + 0.75}
-                  x2={impactEvent.xy[0] + 0.75}
-                  y2={-impactEvent.xy[1] - 0.75}
-                  stroke="#f43f5e"
-                  strokeWidth="0.28"
-                  strokeLinecap="round"
-                />
-                <circle cx={impactEvent.xy[0]} cy={-impactEvent.xy[1]} r="0.25" fill="#f43f5e" />
-
-                {/* Impact Label Badge */}
-                {(() => {
-                  const ix = impactEvent.xy[0];
-                  const iy = -impactEvent.xy[1];
-                  const badgeY = iy - 2.2;
-                  return (
-                    <g transform={`rotate(${counterRotationDeg}, ${ix}, ${badgeY})`}>
-                      <rect
-                        x={ix - 3.8}
-                        y={badgeY - 0.65}
-                        width="7.6"
-                        height="1.3"
-                        rx="0.3"
-                        fill="#09090b"
-                        stroke="#f43f5e"
-                        strokeWidth="0.08"
-                        className="group-hover:stroke-rose-400 transition-colors"
-                      />
-                      <text
-                        x={ix}
-                        y={badgeY + 0.22}
-                        fill="#fda4af"
-                        fontSize="0.68"
-                        fontFamily="JetBrains Mono, monospace"
-                        fontWeight="700"
-                        textAnchor="middle"
-                      >
-                        IMPACT (t = {impactEvent.t.toFixed(2)}s)
-                      </text>
-                    </g>
-                  );
-                })()}
+                <g transform={`translate(${impactEvent.xy[0]}, ${-impactEvent.xy[1]}) scale(${bounds.u * 0.72})`}>
+                  <circle r="1.1" fill="#ef5a4c" fillOpacity={0.14} stroke="#ef5a4c" strokeWidth="0.1" />
+                  <path d="M-.55 -.55 L.55 .55 M-.55 .55 L.55 -.55" stroke="#ef5a4c" strokeWidth="0.2" strokeLinecap="round" />
+                  <g transform={`rotate(${counterRotationDeg})`}>
+                    <text x="1.5" y="0.25" fill="#ef5a4c" fontSize="0.68" fontFamily="IBM Plex Mono, monospace">
+                      impact {impactEvent.t.toFixed(2)} s
+                    </text>
+                  </g>
+                </g>
               </g>
             )}
 
@@ -817,11 +656,11 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                           height={vehWidth + 0.8}
                           rx="0.7"
                           fill="none"
-                          stroke="#38bdf8"
+                          stroke="#f2c037"
                           strokeWidth="0.16"
                           strokeDasharray="0.4 0.3"
                           opacity={0.85}
-                          className="animate-pulse"
+                         
                         />
                       )}
 
@@ -832,8 +671,8 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         width="0.75"
                         height="0.25"
                         rx="0.08"
-                        fill="#18181b"
-                        stroke="#52525b"
+                        fill="#141517"
+                        stroke="#46474c"
                         strokeWidth="0.04"
                       />
                       <rect
@@ -842,8 +681,8 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         width="0.75"
                         height="0.25"
                         rx="0.08"
-                        fill="#18181b"
-                        stroke="#52525b"
+                        fill="#141517"
+                        stroke="#46474c"
                         strokeWidth="0.04"
                       />
                       <rect
@@ -852,8 +691,8 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         width="0.75"
                         height="0.25"
                         rx="0.08"
-                        fill="#18181b"
-                        stroke="#52525b"
+                        fill="#141517"
+                        stroke="#46474c"
                         strokeWidth="0.04"
                       />
                       <rect
@@ -862,8 +701,8 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         width="0.75"
                         height="0.25"
                         rx="0.08"
-                        fill="#18181b"
-                        stroke="#52525b"
+                        fill="#141517"
+                        stroke="#46474c"
                         strokeWidth="0.04"
                       />
 
@@ -887,7 +726,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         width="2.1"
                         height={vehWidth - 0.44}
                         rx="0.25"
-                        fill="#09090b"
+                        fill="#0a0b0c"
                         fillOpacity={0.4}
                         stroke={color}
                         strokeWidth="0.06"
@@ -918,38 +757,20 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                       <circle cx="2.15" cy="0.65" r="0.12" fill="#fef08a" opacity={0.9} />
                     </g>
 
-                    {/* Vehicle Text Label Badge (Counter-rotated for horizontal legibility) */}
-                    {(() => {
-                      const badgeOffsetY = -vehWidth / 2 - 1.2;
-                      return (
-                        <g
-                          transform={`translate(${svgPosX}, ${svgPosY + badgeOffsetY}) rotate(${counterRotationDeg})`}
-                        >
-                          <rect
-                            x="-2.6"
-                            y="-0.65"
-                            width="5.2"
-                            height="1.3"
-                            rx="0.25"
-                            fill="#09090b"
-                            fillOpacity={0.9}
-                            stroke={isSelected ? '#ffffff' : color}
-                            strokeWidth={isSelected ? 0.12 : 0.06}
-                          />
-                          <text
-                            x="0"
-                            y="0.24"
-                            fill="#f4f4f5"
-                            fontSize="0.65"
-                            fontFamily="JetBrains Mono, monospace"
-                            fontWeight="600"
-                            textAnchor="middle"
-                          >
-                            {traj.track} • {state.speed.toFixed(0)} km/h
-                          </text>
-                        </g>
-                      );
-                    })()}
+                    <g transform={`translate(${svgPosX}, ${svgPosY}) rotate(${counterRotationDeg}) scale(${bounds.u})`}>
+                      <text
+                        y={-(vehWidth / 2 + 1.4) / bounds.u - 0.4}
+                        fill="#edeae3"
+                        stroke="#0a0b0c"
+                        strokeWidth="0.22"
+                        paintOrder="stroke"
+                        fontSize="0.72"
+                        fontFamily="IBM Plex Mono, monospace"
+                        textAnchor="middle"
+                      >
+                        {traj.track} {state.speed.toFixed(0)} km/h
+                      </text>
+                    </g>
                   </g>
                 );
               })}
@@ -957,98 +778,50 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
           </g>
         </svg>
 
-        {/* Overlay Lower-Left: Forensic 10m Scale Bar & Coordinate Status */}
-        <div className="absolute bottom-3 left-3 flex items-center space-x-3 bg-zinc-950/85 backdrop-blur-md border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-zinc-300 shadow-lg pointer-events-none z-10">
-          <div className="flex flex-col items-center">
-            <div className="w-14 h-1.5 bg-zinc-300 border-x border-zinc-100 flex justify-between" />
-            <span className="text-[10px] text-zinc-400 font-semibold mt-0.5">10m scale</span>
-          </div>
-          <div className="h-4 w-[1px] bg-zinc-800" />
-          <div className="flex flex-col text-[10px] leading-tight text-zinc-400">
-            <span>GRID: 1 m squares, labelled every {roadGrid.gridStep} m</span>
-            <span>FRAME: {isEgoMode ? 'CAR-CENTRED EGO' : 'ROAD-FIXED JUNCTION'}</span>
-          </div>
+        <div className="pointer-events-none absolute bottom-1.5 left-2 z-10 rounded-[3px] bg-asphalt-950/80 px-1.5 py-0.5 text-[11px] text-bone-300">
+          1 m squares, labelled every {roadGrid.gridStep} m · {isEgoMode ? 'centred on the vehicle' : 'road-fixed'}
         </div>
 
-        {/* Overlay Top-Right: Monospace Telemetry Readout */}
-        <div className="absolute top-3 right-3 bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-md p-2.5 shadow-xl text-xs font-mono space-y-1.5 z-10 min-w-[210px] max-w-[270px]">
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-1 text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
-            <span>Live Telemetry</span>
-            <span className="text-cyan-400">t = {currentTime.toFixed(2)}s</span>
-          </div>
-
-          <div className="space-y-1.5">
-            {trajectoriesWithState.map(({ traj, state, color }) => {
-              const isSelected = selectedTrack === traj.track;
-              if (!state) return null;
-
-              return (
-                <div
-                  key={`telemetry-${traj.track}`}
-                  onClick={() => setSelectedTrack(traj.track)}
-                  className={`flex flex-col p-1.5 rounded cursor-pointer transition-all active:scale-[0.98] ${
-                    isSelected
-                      ? 'bg-zinc-800/90 border border-zinc-600 text-zinc-100'
-                      : 'hover:bg-zinc-900/80 border border-transparent text-zinc-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-between font-semibold">
-                    <div className="flex items-center space-x-1.5">
-                      <span
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: color }}
-                      />
-                      <span>{traj.track}</span>
-                    </div>
-                    <span className="text-zinc-100">{state.speed.toFixed(1)} km/h</span>
-                  </div>
-
-                  <div className="flex items-center justify-between text-[10px] text-zinc-400 mt-0.5">
-                    <span>
-                      X: {state.x >= 0 ? `+${state.x.toFixed(1)}` : state.x.toFixed(1)}m
+        <div className="absolute left-2 top-2 z-10 space-y-px rounded bg-asphalt-900/90 p-1 text-[12px]">
+          {trajectoriesWithState.map(({ traj, state, color }) => {
+            if (!state) return null;
+            const isSelected = selectedTrack === traj.track;
+            return (
+              <button
+                key={`telemetry-${traj.track}`}
+                onClick={() => setSelectedTrack(traj.track)}
+                aria-pressed={isSelected}
+                className={`measured block w-full rounded-[3px] px-1.5 py-0.5 text-left ${isSelected ? 'bg-asphalt-700' : 'hover:bg-asphalt-800'}`}
+              >
+                <span className="flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-1.5 text-bone-300">
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+                    {traj.track}
+                  </span>
+                  <span className="text-bone">{state.speed.toFixed(1)} km/h</span>
+                </span>
+                <span className="hidden justify-between gap-3 text-[11px] text-bone-500 sm:flex">
+                  <span>{state.x >= 0 ? '+' : ''}{state.x.toFixed(1)}, {state.y >= 0 ? '+' : ''}{state.y.toFixed(1)} m</span>
+                  {state.accel !== null && (
+                    <span className={state.accel < -1 ? 'text-signal-red' : state.accel > 1 ? 'text-signal-green' : ''}>
+                      {state.accel >= 0 ? '+' : ''}{state.accel.toFixed(1)} m/s²
                     </span>
-                    <span>
-                      Y: {state.y >= 0 ? `+${state.y.toFixed(1)}` : state.y.toFixed(1)}m
-                    </span>
-                    {state.accel !== null && (
-                      <span
-                        className={
-                          state.accel < -1.0
-                            ? 'text-rose-400'
-                            : state.accel > 1.0
-                            ? 'text-emerald-400'
-                            : 'text-zinc-400'
-                        }
-                      >
-                        {state.accel >= 0
-                          ? `+${state.accel.toFixed(1)}`
-                          : state.accel.toFixed(1)}{' '}
-                        m/s²
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
+                  )}
+                </span>
+              </button>
+            );
+          })}
           {impactEvent && (
-            <div
+            <button
               onClick={() => jumpToTime(impactEvent.t)}
-              className="mt-1.5 pt-1.5 border-t border-zinc-800/80 flex items-center justify-between text-[10px] text-rose-400 cursor-pointer hover:text-rose-300 transition-colors"
-              title="Click to jump to impact time"
+              title="Jump to the impact"
+              className="measured flex w-full items-center justify-between gap-3 rounded-[3px] px-1.5 py-0.5 text-left text-signal-red hover:bg-asphalt-800"
             >
-              <div className="flex items-center space-x-1">
-                <Crosshair className="w-3 h-3 text-rose-500" />
-                <span className="font-semibold">IMPACT</span>
-              </div>
-              <span>
-                t = {impactEvent.t.toFixed(2)}s ({impactEvent.ground_gap_m.toFixed(1)}m gap)
-              </span>
-            </div>
+              <span>Impact</span>
+              <span>{impactEvent.t.toFixed(2)} s</span>
+            </button>
           )}
         </div>
-      </div>
     </div>
   );
 };

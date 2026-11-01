@@ -69,7 +69,14 @@ export interface Trajectory {
   observed: boolean[];
 }
 
+export interface ModelCredit {
+  model: string;
+  role: string;
+  did: string;
+}
+
 export interface ImpactEvent {
+  confirmed?: boolean;
   type: "impact";
   tracks: [string, string];
   i: number;
@@ -119,6 +126,9 @@ export interface CaseData {
   version: number;
   private_mode?: boolean;
   camera_mode?: "fixed" | "dashcam";
+  /** Which model did what on this case, written by the pipeline. */
+  models?: ModelCredit[];
+  contact?: { mode: string; per_vehicle?: Record<string, unknown>; occluded_frames?: Record<string, number> };
   clip: ClipInfo;
   clock: ClockInfo;
   calibration: CalibrationInfo;
@@ -135,6 +145,8 @@ export interface CaseData {
     clock_method: string;
     calibration_rms_m: number;
     signal_track?: string | null;
+    signal_note?: string;
+    closest_approach?: { t: number; i?: number; gap_m?: number; tracks?: [string, string]; [key: string]: unknown } | null;
   };
   signals: Record<string, SignalChange[]>;
   statements: Statement[];

@@ -1,24 +1,20 @@
+// Screenshot one page: node scripts/snap.mjs <url-path> <width> <height> <out.png> [full]
 import puppeteer from 'puppeteer-core';
 
-async function snap(w, h, out) {
-  const browser = await puppeteer.launch({
-    executablePath: '/usr/bin/google-chrome',
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-gpu'],
-  });
-  const page = await browser.newPage();
-  await page.setViewport({ width: w, height: h });
-  await page.evaluateOnNewDocument(() => {
-    localStorage.setItem('sakshi_guide_seen', 'true');
-  });
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle0' });
-  await page.screenshot({ path: out });
-  await browser.close();
-  console.log('Saved to', out);
-}
-
-const w = parseInt(process.argv[2] || '1280');
-const h = parseInt(process.argv[3] || '800');
-const out = process.argv[4] || '/home/anhad/.gemini/antigravity-cli/brain/8d369691-7693-4d59-ab51-afe0828b0d17/snap.png';
-
-snap(w, h, out).catch(console.error);
+const [path = '/', w = '1440', h = '900', out = 'snap.png', full] = process.argv.slice(2);
+const browser = await puppeteer.launch({
+  executablePath: '/usr/bin/google-chrome',
+  headless: 'new',
+  args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+});
+const page = await browser.newPage();
+await page.setViewport({ width: +w, height: +h });
+await page.evaluateOnNewDocument(() => localStorage.setItem('sakshi_guide_seen', 'true'));
+const errors = [];
+page.on('pageerror', (e) => errors.push(e.message));
+page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+await page.goto(`http://localhost:5173${path}`, { waitUntil: 'networkidle2', timeout: 30000 });
+await new Promise((r) => setTimeout(r, 2200));
+await page.screenshot({ path: out, fullPage: full === 'full' });
+await browser.close();
+console.log('saved', out, errors.length ? errors.slice(0, 6) : 'no console errors');

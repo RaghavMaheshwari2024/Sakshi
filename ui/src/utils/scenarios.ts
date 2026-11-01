@@ -93,5 +93,6 @@ export async function openScenario(id: string): Promise<void> {
   const st = useCaseStore.getState();
   st.loadCase(data, scenarioVideoUrl(id));
   st.setScenarioId(id);
+  st.setBackendCaseId(null);
   setScenarioInUrl(id);
 }
