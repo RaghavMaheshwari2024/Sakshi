@@ -533,9 +533,11 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
                     {step === 1 && <TimeExhibit data={data} />}
                     {step === 2 && (
                       <>
-                        <div className="grid grid-cols-2 gap-px bg-line">
-                          <div className="bg-asphalt-900"><RulerFrame data={data} /></div>
-                          <div className="bg-asphalt-900"><GroundExhibit data={data} /></div>
+                        <div className="relative">
+                          <RulerFrame data={data} />
+                          <div className="absolute bottom-3 right-3 w-[44%] overflow-hidden rounded border border-line-strong bg-asphalt-950/95">
+                            <GroundExhibit data={data} />
+                          </div>
                         </div>
                         <p className="border-t border-line px-3 py-2 text-[12.5px] text-bone-300">Each dot is {RULER_STEP_M} m further along the measured path. Same distance, very different pixels.</p>
                       </>
