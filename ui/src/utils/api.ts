@@ -63,5 +63,6 @@ export function acceptBackendCase(id: string, data: CaseData): void {
   st.setBackendCaseId(id);
   const u = new URL(window.location.href);
   u.searchParams.delete('scenario');
+  u.searchParams.set('case', id); // so a refresh or a new tab opens this case
   window.history.replaceState(null, '', u.toString());
 }

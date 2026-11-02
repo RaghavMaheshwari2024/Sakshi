@@ -84,6 +84,7 @@ export function scenarioFromUrl(): string | null {
 export function setScenarioInUrl(id: string): void {
   const u = new URL(window.location.href);
   u.searchParams.set('scenario', id);
+  u.searchParams.delete('case');
   window.history.replaceState(null, '', u.toString());
 }
 

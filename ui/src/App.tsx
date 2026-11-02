@@ -28,7 +28,7 @@ function viewFromUrl(): ActiveView {
   const params = new URLSearchParams(window.location.search);
   const v = params.get('view') as ActiveView | null;
   if (v && VIEWS.includes(v)) return v;
-  return params.has('scenario') ? 'case' : 'overview';
+  return params.has('scenario') || params.has('case') ? 'case' : 'overview';
 }
 
 export const App: React.FC = () => {
@@ -151,6 +151,9 @@ export const App: React.FC = () => {
     const st = useCaseStore.getState();
     st.setBackendCaseId(id);
     st.setScenarioId(null);
+    const u = new URL(window.location.href);
+    u.searchParams.delete('case'); // it has no result to reopen yet
+    window.history.replaceState(null, '', u.toString());
     setUncalibrated({ id, mode });
     setActiveView('calibration');
   }, [setActiveView]);
