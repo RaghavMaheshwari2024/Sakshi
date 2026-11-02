@@ -208,6 +208,9 @@ function RoadSurface({ data, video, s, bounds, grid }: {
 
 // ---------------------------------------------------------------- vehicles
 
+const MIN_TAG_KMH = 3;
+const MIN_TAG_BOX_SHARE = 0.08; // of the frame's width: smaller than this, a tag would crowd a distant queue
+
 /**
  * The measured point is the vehicle's lowest visible pixel: the part of it
  * nearest the camera. Draw the box with that corner there, i.e. its centre
@@ -222,8 +225,18 @@ function boxCentre(x: number, y: number, dx: number, dy: number, L: number, W: n
   return [x + su * (L / 2) * ux + sn * (W / 2) * nx, y + su * (L / 2) * uy + sn * (W / 2) * ny];
 }
 
-function Vehicle({ tr, concept, name, s, t, cam, lift, compact }: {
+type VehicleLabel = 'full' | 'tag' | 'none';
+
+/** A busy road has many vehicles: label the ones in question fully, and tag those moving close enough to read. */
+function labelFor(tr: Trajectory, st: { k: number; kmh: number }, featured: boolean, boxWidths: Map<number, number> | undefined, frameWidth: number, anyFeatured: boolean): VehicleLabel {
+  if (featured) return 'full';
+  const closeEnough = (boxWidths?.get(tr.i[st.k]) ?? 0) >= frameWidth * MIN_TAG_BOX_SHARE;
+  return st.kmh >= MIN_TAG_KMH && (closeEnough || !anyFeatured) ? 'tag' : 'none';
+}
+
+function Vehicle({ tr, concept, name, s, t, cam, lift, compact, featured, anyFeatured, boxWidths, frameWidth }: {
   tr: Trajectory; concept: string; name: string; s: number; t: number; cam: Vec2 | null; lift: number; compact?: boolean;
+  featured: boolean; anyFeatured: boolean; boxWidths?: Map<number, number>; frameWidth: number;
 }) {
   const st = stateAt(tr, t);
   const colour = getTrackColor(tr.track);
@@ -236,6 +249,7 @@ function Vehicle({ tr, concept, name, s, t, cam, lift, compact }: {
     trail = pts.length > 1 ? pts : null;
   }
   if (!st) return null;
+  const label = labelFor(tr, st, featured, boxWidths, frameWidth, anyFeatured);
   const yaw = Math.atan2(-(s * st.dy), st.dx);
   const [cx, cy] = boxCentre(st.x, st.y, st.dx, st.dy, L, W, cam);
   return (
@@ -251,8 +265,8 @@ function Vehicle({ tr, concept, name, s, t, cam, lift, compact }: {
           <lineBasicMaterial color={colour} />
         </lineSegments>
       </group>
-      <Html position={toWorld(cx, cy, s, Hh + lift)} center zIndexRange={[20, 0]}>
-        {compact ? (
+      {label !== 'none' && <Html position={toWorld(cx, cy, s, Hh + lift)} center zIndexRange={[20, 0]}>
+        {compact || label === 'tag' ? (
           <div className="pointer-events-none select-none whitespace-nowrap rounded border px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-bone"
                style={{ background: 'rgba(9,9,11,0.8)', borderColor: colour }}>
             {st.kmh.toFixed(0)} km/h
@@ -265,7 +279,7 @@ function Vehicle({ tr, concept, name, s, t, cam, lift, compact }: {
             <div className="text-[10px] text-bone-400 tabular-nums">90%: {st.lo.toFixed(1)} to {st.hi.toFixed(1)}</div>
           </div>
         )}
-      </Html>
+      </Html>}
     </group>
   );
 }
@@ -541,6 +555,13 @@ export const Replay3D: React.FC<Replay3DProps> = ({ initialMode = 'camera', embe
   }, [data]);
 
   const ghostList = useMemo(() => (data ? claimGhosts(data) : []), [data]);
+  // The vehicles the case is about: those in the event, then those in statements.
+  const featuredTracks = useMemo(() => {
+    if (!data) return [];
+    const fromEvents = data.events?.[0]?.tracks ?? data.facts?.closest_approach?.tracks ?? [];
+    return [...new Set([...fromEvents, ...(data.claims || []).map((c) => c.subject_track)])];
+  }, [data]);
+  const boxWidths = useMemo(() => new Map((data?.tracks ?? []).map((t) => [t.id, new Map(t.frames.map((f) => [f.i, f.box[2] - f.box[0]]))])), [data]);
   if (!data || !scene) return null;
   const { s, movers, bounds, poses, stop, imp, camXY } = scene;
   const overlayOpacity = !embedded && mode === 'camera' && settledMode === 'camera' ? 1 : 0;
@@ -556,10 +577,14 @@ export const Replay3D: React.FC<Replay3DProps> = ({ initialMode = 'camera', embe
         <directionalLight position={[30, 60, 20]} intensity={1.1} />
         <RoadSurface data={data} video={video} s={s} bounds={bounds} grid={grid} />
         {stop && <Line points={[toWorld(stop[0][0], stop[0][1], s, 0.06), toWorld(stop[1][0], stop[1][1], s, 0.06)]} color="#ffffff" lineWidth={4} />}
-        {movers.map((tr, idx) => (
-          <Vehicle key={tr.track} tr={tr} concept={concept(tr.track)} name={vehicleName(data, tr.track, concept(tr.track))} s={s}
-                   t={currentTime} cam={camXY} lift={(embedded ? 1.0 : 1.6) + idx * (embedded ? 1.2 : 2.6)} compact={embedded} />
-        ))}
+        {movers.map((tr) => {
+          const rank = featuredTracks.indexOf(tr.track);
+          return (
+            <Vehicle key={tr.track} tr={tr} concept={concept(tr.track)} name={vehicleName(data, tr.track, concept(tr.track))} s={s}
+                     t={currentTime} cam={camXY} lift={(embedded ? 1.0 : 1.6) + Math.max(rank, 0) * (embedded ? 1.2 : 2.6)} compact={embedded}
+                     featured={rank >= 0} anyFeatured={featuredTracks.length > 0} boxWidths={boxWidths.get(tr.track)} frameWidth={data.clip.width} />
+          );
+        })}
         {ghosts && ghostList.map((g) => {
           const tr = movers.find((m) => m.track === g.track);
           return tr ? <ClaimGhost key={g.track} tr={tr} g={g} concept={concept(g.track)} s={s} t={currentTime}

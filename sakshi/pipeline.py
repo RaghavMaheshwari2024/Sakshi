@@ -34,7 +34,7 @@ from .engine import calib_sources
 from .engine import claims as claims_mod
 from .engine import contact as contact_mod
 from .engine import clock as clock_mod
-from .engine import events, homography, signals
+from .engine import events, homography, signals, track_identity
 from .engine.kalman import Smoothed
 from . import usage_log
 from .engine.uncertainty import MCConfig, TrackResult, measure, step_displacements
@@ -484,6 +484,10 @@ def _run(case_dir: Path, progress: Progress, tracks_override: list[dict] | None,
         concepts = list(config.SAM_CONCEPTS) + (["wheel"] if contact_mode == "wheels" else [])
         progress("tracking", {"concepts": concepts})
         tracks = asyncio.run(sam.track_video(video, concepts))
+    tracks, identity_splits = track_identity.split_reused_tracks(
+        tracks, calib.H, info.fps, info.width, info.height, events.MOVERS)
+    if identity_splits:
+        progress("tracking", {"split": identity_splits})
     progress("tracking", {"tracks": [t["id"] for t in tracks if t["concept"] != "wheel"],
                           "views": _track_views(tracks, info.width, info.height)})
     contact_report: dict = {}

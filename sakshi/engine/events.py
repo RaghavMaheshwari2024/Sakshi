@@ -170,9 +170,27 @@ def closest_approach(results: dict[str, TrackResult], tracks: list[dict],
     return best
 
 
+def _in_long_gap(observed: np.ndarray, t: np.ndarray, min_gap_s: float = 1.0) -> np.ndarray:
+    """Frames in a long stretch with no observation. The smoother only guesses
+    there, so a speed must not be reported from them."""
+    out = np.zeros(len(t), bool)
+    k = 0
+    while k < len(t):
+        if observed[k]:
+            k += 1
+            continue
+        end = k
+        while end + 1 < len(t) and not observed[end + 1]:
+            end += 1
+        if t[end] - t[k] >= min_gap_s:
+            out[k:end + 1] = True
+        k = end + 1
+    return out
+
+
 def window_speed(res: TrackResult, t0: float, t1: float) -> dict | None:
     """Mean speed over [t0, t1] per Monte Carlo sample -> median and 90% interval."""
-    m = (res.nominal.t >= t0) & (res.nominal.t <= t1)
+    m = (res.nominal.t >= t0) & (res.nominal.t <= t1) & ~_in_long_gap(res.nominal.observed, res.nominal.t)
     if not m.any():
         return None
     per_sample = res.speed_samples[:, m].mean(1)

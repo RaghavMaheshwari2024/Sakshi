@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import pytest
 
 from sakshi.engine import claims, events
 from sakshi.engine.kalman import Smoothed
@@ -207,3 +208,60 @@ def test_report_says_when_a_person_assigned_the_drivers():
 def test_clock_wording_does_not_claim_the_video_has_no_clock():
     text = limitation_lines({"clock_method": "container_pts_even", "impact": {"t": 1}, "signal_changes": [1]})[0]
     assert "could be used" in text
+
+
+def _frames(start, xs, y=300.0, edge_box=None):
+    return [{"i": start + n, "box": [x - 10, y - 20, x + 10, y], "contact_px": [x, y]} for n, x in enumerate(xs)]
+
+
+class TestTrackIdentity:
+    H = np.eye(3)  # one pixel is one metre, so distances read directly
+    MOVERS = {"car"}
+
+    def split(self, frames):
+        from sakshi.engine.track_identity import split_reused_tracks
+
+        return split_reused_tracks([{"id": "car-4", "concept": "car", "frames": frames}], self.H, 25.0, 1000, 600, self.MOVERS)
+
+    def test_a_vehicle_back_the_way_it_came_is_a_different_vehicle(self):
+        tracks, splits = self.split(_frames(0, range(500, 530, 2)) + _frames(60, [300, 302, 304]))
+        assert [t["id"] for t in tracks] == ["car-4", "car-4b"]
+        assert splits == [{"track": "car-4", "new_track": "car-4b", "at_frame": 60}]
+        assert [f["i"] for f in tracks[1]["frames"]] == [60, 61, 62]
+
+    def test_leaving_by_one_edge_and_returning_by_another_splits(self):
+        out = [{"i": n, "box": [980 + n, 300, 1000, 320]} for n in range(5)]
+        back = [{"i": 80 + n, "box": [0, 300, 20 + n, 320]} for n in range(3)]
+        tracks, _ = self.split(out + back)
+        assert len(tracks) == 2
+
+    def test_a_hidden_vehicle_that_carries_on_stays_one_track(self):
+        tracks, splits = self.split(_frames(0, range(500, 530, 2)) + _frames(40, [600, 602, 604]))
+        assert len(tracks) == 1 and not splits
+
+    def test_a_vehicle_reappearing_in_place_stays_one_track(self):
+        # Seen in two CARLA runs: lost for over a second, back within a metre.
+        tracks, _ = self.split(_frames(0, [500, 500, 500, 500]) + _frames(40, [500.5, 500.5]))
+        assert len(tracks) == 1
+
+    def test_short_dropouts_are_left_alone(self):
+        tracks, _ = self.split(_frames(0, range(500, 530, 2)) + _frames(18, [300, 302]))
+        assert len(tracks) == 1
+
+    def test_signals_are_never_split(self):
+        from sakshi.engine.track_identity import split_reused_tracks
+
+        light = {"id": "traffic_light-0", "concept": "traffic light", "frames": _frames(0, [500, 500]) + _frames(90, [10, 10])}
+        tracks, _ = split_reused_tracks([light], self.H, 25.0, 1000, 600, self.MOVERS)
+        assert tracks == [light]
+
+
+def test_no_speed_is_reported_from_a_long_unobserved_stretch():
+    r = result("car", [0, 0], [5, 0])
+    r.nominal.observed[20:60] = False  # 1.6 s with nothing seen
+    assert events.window_speed(r, 1.0, 2.0) is None
+    assert events.window_speed(r, 0.0, 2.0)["kmh"] == pytest.approx(18, abs=2)
+    assert events.window_speed(r, 2.5, 3.5) is not None
+    r.nominal.observed[20:60] = True
+    r.nominal.observed[20:23] = False  # a dropped frame or two stays usable
+    assert events.window_speed(r, 0.7, 1.0) is not None
