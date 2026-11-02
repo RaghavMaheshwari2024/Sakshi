@@ -28,6 +28,7 @@ BRAKE_DECEL = -2.5  # m/s^2: firmer than coasting, softer than an emergency stop
 # boxes overlap through perspective alone, so contact cannot be judged from the image.
 MAX_CONTACT_M_PER_PX = 0.3
 NEAR_MISS_MAX_GAP_M = 10.0  # about two car lengths, measured between tyre-line points
+MIN_WINDOW_COVERAGE = 0.6  # of a speed window's frames, or it is not measuring that stretch
 PARALLEL_COS = float(np.cos(np.radians(30.0)))
 
 
@@ -190,7 +191,7 @@ def _in_long_gap(observed: np.ndarray, t: np.ndarray, min_gap_s: float = 1.0) ->
 
 def window_speed(res: TrackResult, t0: float, t1: float) -> dict | None:
     """Mean speed over [t0, t1] per Monte Carlo sample -> median and 90% interval."""
-    m = (res.nominal.t >= t0) & (res.nominal.t <= t1) & ~_in_long_gap(res.nominal.observed, res.nominal.t)
+    m = (res.nominal.t >= t0) & (res.nominal.t <= t1) & _usable(res)
     if not m.any():
         return None
     per_sample = res.speed_samples[:, m].mean(1)
@@ -200,16 +201,49 @@ def window_speed(res: TrackResult, t0: float, t1: float) -> dict | None:
             "lo90": round(float(lo), 1), "hi90": round(float(hi), 1)}
 
 
-def clearest_second(res: TrackResult, length_s: float = 1.0) -> dict | None:
-    """The stretch of a track measured most tightly: the fair window for a speed
-    claim tied to no event in the clip ("when I crossed")."""
-    t = res.nominal.t
-    best = None
-    for t0 in t[t <= t[-1] - length_s + 1e-6]:
-        w = window_speed(res, float(t0), float(t0) + length_s)
-        if w and (best is None or w["hi90"] - w["lo90"] < best["hi90"] - best["lo90"]):
-            best = w
-    return best
+def mark_reliable(results: dict[str, TrackResult], tracks: list[dict], H: np.ndarray,
+                  frame_size: tuple[int, int], margin_s: float = 0.2) -> None:
+    """Which frames of each track can support a speed. Not those where the box is
+    cut by the picture's edge (its bottom is no longer the tyre line), nor those too
+    far away for the image to place the vehicle, nor those just beside either,
+    which the smoother mixes in. Stored as `reliable` in the track's results."""
+    by_id = {t["id"]: t for t in tracks}
+    for tid, r in results.items():
+        boxes = _boxes_by_frame(by_id[tid]) if tid in by_id else {}
+        good, last = np.ones(len(r.frames), bool), True
+        for k, i in enumerate(r.frames):
+            box = boxes.get(int(i))
+            if box is not None:
+                last = not _clipped(box, frame_size) and _resolved(H, box)
+            good[k] = last
+        t = r.nominal.t
+        keep = good.copy()
+        for k in np.flatnonzero(~good):
+            keep[np.abs(t - t[k]) <= margin_s] = False
+        r.extras["reliable"] = keep.tolist()
+
+
+def _usable(res: TrackResult) -> np.ndarray:
+    usable = ~_in_long_gap(res.nominal.observed, res.nominal.t)
+    if "reliable" in res.extras:
+        usable &= np.asarray(res.extras["reliable"], bool)
+    return usable
+
+
+def windows_over_track(res: TrackResult, length_s: float = 1.0, step_s: float = 0.2) -> list[dict]:
+    """Speed over each stretch of the track that is mostly reliable."""
+    t, usable = res.nominal.t, _usable(res)
+    out, next_t = [], t[0] if len(t) else 0.0
+    for t0 in t[t <= t[-1] - length_s + 1e-6] if len(t) else []:
+        if t0 < next_t:
+            continue
+        next_t = t0 + step_s
+        inside = (t >= t0) & (t <= t0 + length_s)
+        if usable[inside].mean() >= MIN_WINDOW_COVERAGE:
+            w = window_speed(res, float(t0), float(t0) + length_s)
+            if w:
+                out.append(w)
+    return out
 
 
 MIN_BRAKE_DROP_KMH = 3.0  # braking must leave the vehicle at least this much slower

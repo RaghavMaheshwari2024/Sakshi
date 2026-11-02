@@ -12,6 +12,7 @@ interface SpeedChartPanelProps {
 
 interface TelemetryPoint {
   inRange: boolean;
+  reliable?: boolean;
   speed: number;
   lo90: number;
   hi90: number;
@@ -49,6 +50,7 @@ function getInterpolatedTrajectory(traj: Trajectory, t: number): TelemetryPoint 
       speed: traj.speed_kmh[lastIdx] ?? 0,
       lo90: traj.lo90_kmh[lastIdx] ?? 0,
       hi90: traj.hi90_kmh[lastIdx] ?? 0,
+      reliable: traj.reliable?.[lastIdx] !== false,
     };
   }
 
@@ -69,7 +71,7 @@ function getInterpolatedTrajectory(traj: Trajectory, t: number): TelemetryPoint 
   const h1 = traj.hi90_kmh[idx + 1] ?? s1;
   const hi90 = h0 + alpha * (h1 - h0);
 
-  return { inRange: true, speed, lo90, hi90 };
+  return { inRange: true, speed, lo90, hi90, reliable: traj.reliable?.[idx] !== false && traj.reliable?.[idx + 1] !== false };
 }
 
 export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = '' }) => {
@@ -159,11 +161,12 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
   const yMax = useMemo(() => {
     let maxFound = 40;
     trajectories.forEach((traj) => {
-      traj.speed_kmh?.forEach((s) => {
-        if (s > maxFound) maxFound = s;
+      // Frames too unreliable to draw must not stretch the axis for the rest.
+      traj.speed_kmh?.forEach((s, i) => {
+        if (traj.reliable?.[i] !== false && s > maxFound) maxFound = s;
       });
-      traj.hi90_kmh?.forEach((s) => {
-        if (s > maxFound) maxFound = s;
+      traj.hi90_kmh?.forEach((s, i) => {
+        if (traj.reliable?.[i] !== false && s > maxFound) maxFound = s;
       });
     });
 
@@ -238,9 +241,11 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
       // 1. Solid speed curve path string
       let curvePath = '';
       for (let i = 0; i < traj.t.length; i++) {
+        if (traj.reliable?.[i] === false) continue; // a break in the line, not a guess
         const x = xScale(traj.t[i]);
         const y = yScale(traj.speed_kmh[i] ?? 0);
-        curvePath += `${i === 0 ? 'M' : ' L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+        const joins = i > 0 && traj.reliable?.[i - 1] !== false;
+        curvePath += `${joins ? ' L' : ' M'} ${x.toFixed(1)} ${y.toFixed(1)}`;
       }
 
       // 2. 90% confidence ribbon polygon points
@@ -252,13 +257,13 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
 
         for (let i = 0; i < traj.t.length; i++) {
           const x = xScale(traj.t[i]).toFixed(1);
-          const yHi = yScale(traj.hi90_kmh[i] ?? traj.speed_kmh[i]).toFixed(1);
+          const yHi = yScale(traj.reliable?.[i] === false ? 0 : traj.hi90_kmh[i] ?? traj.speed_kmh[i]).toFixed(1);
           upperPoints.push(`${x},${yHi}`);
         }
 
         for (let i = traj.t.length - 1; i >= 0; i--) {
           const x = xScale(traj.t[i]).toFixed(1);
-          const yLo = yScale(traj.lo90_kmh[i] ?? traj.speed_kmh[i]).toFixed(1);
+          const yLo = yScale(traj.reliable?.[i] === false ? 0 : traj.lo90_kmh[i] ?? traj.speed_kmh[i]).toFixed(1);
           lowerPoints.push(`${x},${yLo}`);
         }
 
@@ -416,7 +421,9 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
               >
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
                 <span className="text-bone-400">{item.track}</span>
-                {item.inRange ? (
+                {item.inRange && item.reliable === false ? (
+                  <span className="text-bone-500">not measurable here</span>
+                ) : item.inRange ? (
                   <span>
                     {item.speed.toFixed(1)}{' '}
                     <span className="text-bone-500">({item.lo90.toFixed(1)}–{item.hi90.toFixed(1)})</span>
@@ -670,7 +677,7 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
 
               {/* Exact Speed Points on Playhead */}
               {activeTelemetries.map((item) => {
-                if (!item.inRange) return null;
+                if (!item.inRange || item.reliable === false) return null;
                 const cy = yScale(item.speed);
                 const isSelected = selectedTrack === item.track;
                 const isDimmed = selectedTrack !== null && !isSelected;
@@ -731,7 +738,9 @@ export const SpeedChartPanel: React.FC<SpeedChartPanelProps> = ({ className = ''
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
                     {traj.track}
                   </span>
-                  {d.inRange ? (
+                  {d.inRange && d.reliable === false ? (
+                    <span className="text-bone-500">not measurable here</span>
+                  ) : d.inRange ? (
                     <span>
                       {d.speed.toFixed(1)} <span className="text-bone-500">({d.lo90.toFixed(1)}–{d.hi90.toFixed(1)})</span>
                     </span>

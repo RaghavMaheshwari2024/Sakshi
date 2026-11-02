@@ -265,3 +265,52 @@ def test_no_speed_is_reported_from_a_long_unobserved_stretch():
     r.nominal.observed[20:60] = True
     r.nominal.observed[20:23] = False  # a dropped frame or two stays usable
     assert events.window_speed(r, 0.7, 1.0) is not None
+
+
+def _reliability_case(boxes):
+    r = result("car", [0, 0], [5, 0])
+    track = {"id": "car", "concept": "car", "frames": [{"i": i, "box": b} for i, b in enumerate(boxes)]}
+    return r, track
+
+
+def test_frames_cut_by_the_edge_or_too_far_away_are_not_reliable():
+    good, cut = [100, 100, 200, 150], [100, 100, 200, 600]
+    r, track = _reliability_case([cut] * 10 + [good] * 90)
+    events.mark_reliable({"car": r}, [track], Scale.NEAR, (1280, 600))
+    flags = r.extras["reliable"]
+    assert not any(flags[:10]) and all(flags[20:])
+    assert not flags[12]  # beside the cut frames, which the smoother mixes in
+
+    r, track = _reliability_case([good] * len(T))
+    events.mark_reliable({"car": r}, [track], Scale.FAR, (1280, 600))
+    assert not any(r.extras["reliable"])  # a pixel covers a metre
+
+
+def _with_speed_profile(kmh):
+    r = result("car", [0, 0], [1, 0])
+    r.speed_samples = np.tile(np.asarray(kmh, float), (60, 1)) + np.random.default_rng(2).normal(0, 0.5, (60, 1))
+    return r
+
+
+def test_an_undated_claim_is_not_judged_by_one_slow_stretch():
+    # Stopped, then crossing at about 25: "about 25 when I crossed" holds.
+    r = {"car": _with_speed_profile([2] * 50 + [25] * 50)}
+    assert claims.evaluate(speed_claim("car", 25), r, CTX)["verdict"] == "consistent"
+    # But no stretch at 60 supports a claim of 60.
+    out = claims.evaluate(speed_claim("car", 60), r, CTX)
+    assert out["verdict"] == "inconsistent" and out["measured"]["kmh"] == pytest.approx(25, abs=2)
+
+
+def test_a_vehicle_that_never_moved_can_still_contradict_a_claim():
+    r = {"car": _with_speed_profile([1] * 100)}
+    assert claims.evaluate(speed_claim("car", 40), r, CTX)["verdict"] == "inconsistent"
+
+
+def test_unreliable_frames_never_decide_a_claim():
+    r = _with_speed_profile([25] * 50 + [80] * 50)
+    r.extras["reliable"] = [True] * 50 + [False] * 50
+    assert all(w["kmh"] < 30 for w in events.windows_over_track(r))
+    assert claims.evaluate(speed_claim("car", 80), {"car": r}, CTX)["verdict"] == "inconsistent"
+    r.extras["reliable"] = [False] * 100
+    out = claims.evaluate(speed_claim("car", 25), {"car": r}, CTX)
+    assert out["verdict"] == "cant_tell" and out["measured"] is None

@@ -536,6 +536,8 @@ def _run(case_dir: Path, progress: Progress, tracks_override: list[dict] | None,
     braking, momentum, speeds = {}, None, {}
     if impact:
         results = split_at_impact(results, movers, calib, clk, mc, impact, post_tracks=movers_all)
+    events.mark_reliable(results, tracks, calib.H, (info.width, info.height))
+    if impact:
         progress("physics", {"split_at_frame": impact["i"]})
         for tid in impact["tracks"]:
             braking[tid] = events.braking_onset(results[tid], impact["t"])

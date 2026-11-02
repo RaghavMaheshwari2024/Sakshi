@@ -768,7 +768,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                         fontFamily="IBM Plex Mono, monospace"
                         textAnchor="middle"
                       >
-                        {traj.track} {state.speed.toFixed(0)} km/h
+                        {traj.track} {traj.reliable?.[traj.t.findIndex((x) => x >= currentTime)] === false ? '' : `${state.speed.toFixed(0)} km/h`}
                       </text>
                     </g>
                   </g>
@@ -798,7 +798,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                     <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
                     {traj.track}
                   </span>
-                  <span className="text-bone">{state.speed.toFixed(1)} km/h</span>
+                  <span className="text-bone">{traj.reliable?.[traj.t.findIndex((x) => x >= currentTime)] === false ? 'not measurable here' : `${state.speed.toFixed(1)} km/h`}</span>
                 </span>
                 <span className="hidden justify-between gap-3 text-[11px] text-bone-500 sm:flex">
                   <span>{state.x >= 0 ? '+' : ''}{state.x.toFixed(1)}, {state.y >= 0 ? '+' : ''}{state.y.toFixed(1)} m</span>

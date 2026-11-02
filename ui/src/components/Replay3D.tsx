@@ -106,6 +106,7 @@ function stateAt(tr: Trajectory, t: number) {
     x: lerp(tr.x), y: lerp(tr.y),
     dx: tr.x[k1] - tr.x[k0], dy: tr.y[k1] - tr.y[k0],
     kmh: lerp(tr.speed_kmh), lo: lerp(tr.lo90_kmh), hi: lerp(tr.hi90_kmh), k,
+    reliable: tr.reliable?.[k] !== false,
   };
 }
 
@@ -228,8 +229,9 @@ function boxCentre(x: number, y: number, dx: number, dy: number, L: number, W: n
 type VehicleLabel = 'full' | 'tag' | 'none';
 
 /** A busy road has many vehicles: label the ones in question fully, and tag those moving close enough to read. */
-function labelFor(tr: Trajectory, st: { k: number; kmh: number }, featured: boolean, boxWidths: Map<number, number> | undefined, frameWidth: number, anyFeatured: boolean): VehicleLabel {
+function labelFor(tr: Trajectory, st: { k: number; kmh: number; reliable: boolean }, featured: boolean, boxWidths: Map<number, number> | undefined, frameWidth: number, anyFeatured: boolean): VehicleLabel {
   if (featured) return 'full';
+  if (!st.reliable) return 'none';
   const closeEnough = (boxWidths?.get(tr.i[st.k]) ?? 0) >= frameWidth * MIN_TAG_BOX_SHARE;
   return st.kmh >= MIN_TAG_KMH && (closeEnough || !anyFeatured) ? 'tag' : 'none';
 }
@@ -269,14 +271,18 @@ function Vehicle({ tr, concept, name, s, t, cam, lift, compact, featured, anyFea
         {compact || label === 'tag' ? (
           <div className="pointer-events-none select-none whitespace-nowrap rounded border px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-bone"
                style={{ background: 'rgba(9,9,11,0.8)', borderColor: colour }}>
-            {st.kmh.toFixed(0)} km/h
+            {st.reliable ? `${st.kmh.toFixed(0)} km/h` : 'not measurable here'}
           </div>
         ) : (
           <div className="pointer-events-none select-none whitespace-nowrap rounded border px-2 py-1 text-center"
                style={{ background: 'rgba(9,9,11,0.82)', borderColor: colour }}>
             <div className="text-[11px] font-medium capitalize" style={{ color: colour }}>{name}</div>
-            <div className="font-mono text-[15px] text-bone tabular-nums">{st.kmh.toFixed(1)} km/h</div>
-            <div className="text-[10px] text-bone-400 tabular-nums">90%: {st.lo.toFixed(1)} to {st.hi.toFixed(1)}</div>
+            {st.reliable ? (
+              <>
+                <div className="font-mono text-[15px] text-bone tabular-nums">{st.kmh.toFixed(1)} km/h</div>
+                <div className="text-[10px] text-bone-400 tabular-nums">90%: {st.lo.toFixed(1)} to {st.hi.toFixed(1)}</div>
+              </>
+            ) : <div className="text-[11px] text-bone-400">not measurable here</div>}
           </div>
         )}
       </Html>}

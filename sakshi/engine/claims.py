@@ -14,18 +14,34 @@ from .uncertainty import TrackResult
 SPEED_TOLERANCE = 0.10
 
 
+MIN_MOVING_KMH = 5.0
 MIN_USEFUL_SPAN_KMH = 10.0  # intervals wider than this and than the speed itself settle nothing
 
 COLOUR = {"yellow": "amber", "orange": "amber", "amber": "amber", "red": "red", "green": "green"}
 
 
-def _speed_window(claim: dict, res: TrackResult, impact_t: float | None, cross_t: float | None):
+def _undated_window(res: TrackResult, claimed: float | None):
+    """A claim tied to no moment could mean any stretch while the vehicle moved, so
+    it stands if any reliable stretch agrees: the tightest such one is reported.
+    Otherwise it is judged against the stretch that comes closest to it."""
+    windows = events.windows_over_track(res)
+    moving = [w for w in windows if w["kmh"] >= MIN_MOVING_KMH] or windows
+    if not moving or claimed is None:
+        return None
+    agree = [w for w in moving if w["lo90"] <= claimed <= w["hi90"]]
+    if agree:
+        return min(agree, key=lambda w: w["hi90"] - w["lo90"])
+    return min(moving, key=lambda w: max(w["lo90"] - claimed, claimed - w["hi90"]))
+
+
+def _speed_window(claim: dict, res: TrackResult, impact_t: float | None, cross_t: float | None,
+                  claimed: float | None = None):
     when = claim.get("when", "unspecified")
     if when == "at_stop_line":
         # Never fall back to the pre-impact window: that is a different moment.
         return events.window_speed(res, cross_t - 0.2, cross_t + 0.2) if cross_t is not None else None
-    if impact_t is None:  # no event to measure against: the track's clearest stretch
-        return events.clearest_second(res) if when == "unspecified" else None
+    if impact_t is None:  # no event to measure against
+        return _undated_window(res, claimed) if when == "unspecified" else None
     if when == "at_impact":
         return events.window_speed(res, impact_t - 0.25, impact_t - 0.05)
     # just_before_impact / unspecified: the second before contact
@@ -141,7 +157,7 @@ def evaluate(claim: dict, results: dict[str, TrackResult], ctx: dict) -> dict:
             ref_t = ctx["closest_t"]
         # A moment between two other road users says nothing about when this one is judged.
         outsider = claim["subject_track"] not in ctx.get("moment_tracks", [claim["subject_track"]])
-        w = _speed_window(claim, res, None if near_miss and outsider else ref_t, cross_t)
+        w = _speed_window(claim, res, None if near_miss and outsider else ref_t, cross_t, v)
         near_miss = near_miss and not outsider
         if w is None:
             out["reason"] = "no measurement at the time the claim refers to"

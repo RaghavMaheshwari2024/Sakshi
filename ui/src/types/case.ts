@@ -77,6 +77,8 @@ export interface Trajectory {
   speed_kmh: number[];
   lo90_kmh: number[];
   hi90_kmh: number[];
+  /** False where the engine cannot support a speed: cut by the frame edge, or too far away. Absent on older cases. */
+  reliable?: boolean[];
   long_acc_ms2: (number | null)[];
   observed: boolean[];
 }
