@@ -14,7 +14,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ModelsBridge } from './components/ModelsBridge';
 import { Button, Mark, Skeleton } from './components/ui';
 import { loadScenarioIndex, openScenario, scenarioFromUrl } from './utils/scenarios';
-import { acceptBackendCase, openBackendCase } from './utils/api';
+import { acceptBackendCase, fetchBackendCases, openBackendCase } from './utils/api';
 import { gsap, prefersReducedMotion, useGSAP } from './lib/motion';
 import type { CaseData } from './types/case';
 
@@ -75,6 +75,18 @@ export const App: React.FC = () => {
   }, [activeView, loading, isBridgeOpen]);
 
   // Load a case on mount: a backend case by link, else a scenario, else the mock.
+  const calibrateCase = useCallback((id: string, mode: 'fixed' | 'dashcam' = 'fixed') => {
+    const st = useCaseStore.getState();
+    st.setBackendCaseId(id);
+    st.setScenarioId(null);
+    const u = new URL(window.location.href);
+    u.searchParams.delete('scenario');
+    u.searchParams.set('case', id); // so a refresh comes back to this calibration
+    window.history.replaceState(null, '', u.toString());
+    setUncalibrated({ id, mode });
+    setActiveView('calibration');
+  }, [setActiveView]);
+
   useEffect(() => {
     let isMounted = true;
     const fetchCase = async () => {
@@ -82,7 +94,9 @@ export const App: React.FC = () => {
         setLoading(true);
         const params = new URLSearchParams(window.location.search);
         const wantedCase = params.get('case');
-        if (wantedCase) {
+        // A case with no result yet goes to calibration, over the default scenario.
+        const unrun = wantedCase ? (await fetchBackendCases())?.find((c) => c.id === wantedCase && c.status !== 'done') : undefined;
+        if (wantedCase && !unrun) {
           await openBackendCase(wantedCase);
           if (isMounted) setLoading(false);
           return;
@@ -93,6 +107,7 @@ export const App: React.FC = () => {
           const id = index.scenarios.some((x) => x.id === wanted) ? wanted! : index.default;
           const startId = index.scenarios.some((x) => x.id === id) ? id : index.scenarios[0].id;
           await openScenario(startId);
+          if (unrun && isMounted) calibrateCase(unrun.id, unrun.camera_mode);
           if (isMounted) setLoading(false);
           return;
         }
@@ -115,7 +130,7 @@ export const App: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [loadCase]);
+  }, [loadCase, calibrateCase]);
 
   // Global navigation shortcuts.
   useEffect(() => {
@@ -147,16 +162,6 @@ export const App: React.FC = () => {
     { dependencies: [activeView, loading] },
   );
 
-  const calibrateCase = useCallback((id: string, mode: 'fixed' | 'dashcam' = 'fixed') => {
-    const st = useCaseStore.getState();
-    st.setBackendCaseId(id);
-    st.setScenarioId(null);
-    const u = new URL(window.location.href);
-    u.searchParams.delete('case'); // it has no result to reopen yet
-    window.history.replaceState(null, '', u.toString());
-    setUncalibrated({ id, mode });
-    setActiveView('calibration');
-  }, [setActiveView]);
 
   const runPipeline = useCallback((start: boolean) => {
     setAutoRun(start);
