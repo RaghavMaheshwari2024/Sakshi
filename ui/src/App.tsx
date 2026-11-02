@@ -212,6 +212,8 @@ export const App: React.FC = () => {
         />
       </div>
 
+      {activeView !== 'overview' && <div className="ambient-glow print:hidden" aria-hidden="true" />}
+
       <main className="flex min-h-0 flex-1 flex-col">
         <ErrorBoundary resetKey={activeView}>
           <div ref={viewRoot} className="flex min-h-0 flex-1 flex-col">
