@@ -15,7 +15,7 @@ export const MODELS: ModelEntry[] = [
     name: 'SAM 3.1',
     file: 'sakshi/meta/sam.py',
     role: 'Sees',
-    job: 'Tracks every car, motorcycle, person and traffic light with persistent ids and pixel masks. One request per concept, streamed and decoded with Meta’s meta-sam-parser.',
+    job: 'Tracks every car, truck, bus, motorcycle, person and traffic light with persistent ids and pixel masks. One request per concept, streamed and decoded with Meta’s meta-sam-parser.',
     enables: 'The mask’s lowest band gives the tyre-road contact point: the single pixel that becomes a position in metres.',
   },
   {

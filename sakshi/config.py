@@ -44,7 +44,7 @@ GLIMMER_API_KEY = os.environ.get("GLIMMER_API_KEY", "not-needed")
 SAM_CONCEPTS = [
     c.strip()
     for c in os.environ.get(
-        "SAKSHI_SAM_CONCEPTS", "car,motorcycle,person,traffic light"
+        "SAKSHI_SAM_CONCEPTS", "car,truck,bus,motorcycle,person,traffic light"
     ).split(",")
     if c.strip()
 ]

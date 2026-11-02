@@ -96,7 +96,7 @@ The models read the scene. They never produce a number: every speed, distance an
 
 | Model | Job |
 | --- | --- |
-| SAM 3.1 | Tracks every car, motorcycle, person and traffic light with pixel masks. The mask's lowest band gives the point where tyre meets road. |
+| SAM 3.1 | Tracks every car, truck, bus, motorcycle, person and traffic light with pixel masks. The mask's lowest band gives the point where tyre meets road. |
 | Muse Spark | Reads the burned-in CCTV clock to recover true frame times, and reads a traffic light when the colour rule is unsure. |
 | Muse Wonder | Describes each road user, suggests who drove what, extracts checkable claims in Hindi or English, and writes the report. A validator rejects any number the engine did not produce. |
 | Muse Voice Transcribe | Transcribes recorded statements. |
