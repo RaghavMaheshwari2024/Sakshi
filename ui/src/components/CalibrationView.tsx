@@ -305,6 +305,11 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
 
   // Replacing the ground changes its frame, so the stop line stays where it is
   // on the image: remember it in pixels, and re-read it once the new fit exists.
+  const vehicleScale = useRef<{ wheelbase_m?: number; sigma_log_scale?: number }>({
+    wheelbase_m: initialCalibration?.source?.wheelbase_m as number | undefined,
+    sigma_log_scale: initialCalibration?.ground_model?.sigma_log_scale,
+  });
+
   const startMethod = (m: CalibMethod) => {
     if (m === method && m === 'manual') return;
     const a = groundToImage(stopLineM[0][0], stopLineM[0][1]);
@@ -332,6 +337,26 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     }
     const found: { image_pts: [number, number][]; ground_pts_m: [number, number][] } = await res.json();
     startMethod('estimated');
+    setSaveStatus('idle');
+    setSaveError(null);
+    const next = found.image_pts.map(([u, v], i) => ({ id: `P${i + 1}`, u, v, x: found.ground_pts_m[i][0], y: found.ground_pts_m[i][1] }));
+    setPoints(next);
+    solveHomography(next);
+  };
+
+  const calibrateFromWheelbase = async (wheelbaseM: number) => {
+    const res = await fetch(`/cases/${caseId}/wheelbase-calibration`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wheelbase_m: wheelbaseM }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().then((j) => j.detail).catch(() => null);
+      throw new Error(detail || `The backend returned ${res.status}.`);
+    }
+    const found: { image_pts: [number, number][]; ground_pts_m: [number, number][]; wheelbase_m: number; sigma_log_scale: number } = await res.json();
+    startMethod('vehicle');
+    vehicleScale.current = { wheelbase_m: found.wheelbase_m, sigma_log_scale: found.sigma_log_scale };
     setSaveStatus('idle');
     setSaveError(null);
     const next = found.image_pts.map(([u, v], i) => ({ id: `P${i + 1}`, u, v, x: found.ground_pts_m[i][0], y: found.ground_pts_m[i][1] }));
@@ -746,7 +771,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
         setSelectedPointId(clicked.id);
         return;
       }
-      if (method === 'estimated') return; // its points follow from the estimate
+      if (method === 'estimated' || method === 'vehicle') return; // its points follow from the estimate
       if (method === 'preset') {
         if (points.length >= 4) return;
         const g = rectCorners(rect)[points.length];
@@ -901,7 +926,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
               // The coarsest view any point was picked at; unknown if any was pasted.
               map_zoom: zooms.includes(null) ? null : Math.min(...(zooms as number[])),
             }
-          : { method, ground_pts_m: points.map((p) => [p.x, p.y]) }; // typed, or estimated from traffic
+          : { method, ground_pts_m: points.map((p) => [p.x, p.y]), ...(method === 'vehicle' ? vehicleScale.current : {}) }; // typed, estimated from traffic, or from a wheelbase
 
     const payload = {
       image_pts: points.map((p) => [p.u, p.v]),
@@ -1014,6 +1039,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
               {activeTool === 'points' && method === 'manual' && 'Click to add a point. Drag a pin to move it.'}
               {activeTool === 'points' && method === 'preset' && (points.length < 4 ? `Click corner ${points.length + 1} of 4.` : 'Drag a corner to refine it.')}
               {activeTool === 'points' && method === 'estimated' && 'A rough estimate from traffic. Not a measurement.'}
+              {activeTool === 'points' && method === 'vehicle' && 'Scaled from a car’s wheelbase. Not measured on the road.'}
               {activeTool === 'points' && method === 'satellite' && (points.some((p) => p.pending) ? 'Now click the same mark on the map.' : 'Click a road mark, then the same mark on the map.')}
               {activeTool === 'stopline' && 'Drag the ends of the stop line.'}
               {activeTool === 'clock' && 'Drag a box over the burned-in clock.'}
@@ -1038,6 +1064,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
               onRectChange={changeRect}
               onStart={startMethod}
               onEstimate={caseId ? estimateFromTraffic : undefined}
+              onWheelbase={caseId ? calibrateFromWheelbase : undefined}
               onUndo={undoMethodPoint}
               onMapPick={handleMapPick}
               onMapMove={handleMapMove}

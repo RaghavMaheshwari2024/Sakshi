@@ -21,6 +21,8 @@ import numpy as np
 from . import homography as hg
 
 SAME_WHEEL_M = 0.7  # a different wheel of the same vehicle is >= ~1.5 m away
+MOSTLY_CUT = 0.5  # of a vehicle's frames cut by the edge: it is too close to fit in the picture
+MIN_WHEEL_OVERLAP = 3  # frames two wheels must share to carry one's position over to the other
 
 
 def _candidates(box, wheels):
@@ -77,6 +79,7 @@ def wheel_contacts(tracks: list[dict], H: np.ndarray, vehicle_concepts=("car", "
                 o_ref = best[0]
                 seen[k] = o_ref
                 f["contact_px"] = list(best[1]["contact_px"])
+                f["wheel_box"] = list(best[1]["box"])
         if not seen:  # the wheels were never seen: keep the lowest mask pixel
             out.append(t)
             continue
@@ -107,6 +110,70 @@ def wheel_contacts(tracks: list[dict], H: np.ndarray, vehicle_concepts=("car", "
         n_w = sum(1 for s_ in src.values() if s_ == "wheel")
         report[t["id"]] = {"wheel_frames": n_w, "offset_frames": len(src) - n_w,
                            "first_wheel_frame": frames[first_k]["i"]}
+        out.append({**t, "frames": frames})
+    return out, report
+
+
+def _whole_wheels(wheel_tracks: list[dict], box_of: dict[int, list[float]], cut) -> list[dict[int, dict]]:
+    """Each wheel track's uncut sightings inside this vehicle's box, in order of appearance."""
+    out = []
+    for w in wheel_tracks:
+        seen = {f["i"]: f for f in w["frames"] if f.get("contact_px") and f["i"] in box_of and not cut(f["box"])
+                and box_of[f["i"]][0] <= f["contact_px"][0] <= box_of[f["i"]][2]}
+        if seen:
+            out.append(seen)
+    return sorted(out, key=min)
+
+
+def _stitched_wheels(t: dict, wheel_tracks: list[dict], H: np.ndarray, cut) -> list[dict]:
+    """A vehicle too close to fit in the frame, measured on its wheels alone. As one wheel
+    leaves, the next takes over, moved by the ground distance seen while both were in view."""
+    frames = [dict(f, contact_px=None) for f in t["frames"]]
+    by_i = {f["i"]: f for f in frames}
+    chain = None
+    for seen in _whole_wheels(wheel_tracks, {f["i"]: f["box"] for f in frames}, cut):
+        px = np.array([seen[i]["contact_px"] for i in sorted(seen)], dtype=float)
+        ground = dict(zip(sorted(seen), hg.img_to_ground(H, px)))
+        if chain is None:
+            chain = dict(ground)
+        else:
+            shared = sorted(set(chain) & set(ground))
+            if len(shared) < MIN_WHEEL_OVERLAP:
+                continue
+            offset = np.median([chain[i] - ground[i] for i in shared], axis=0)
+            chain.update({i: g + offset for i, g in ground.items() if i not in chain})
+        for i in seen:
+            by_i[i].setdefault("wheel_box", list(seen[i]["box"]))
+    for i, g in (chain or {}).items():
+        by_i[i]["contact_px"] = [float(v) for v in hg.ground_to_img(H, g[None])[0]]
+        by_i[i]["contact_src"] = "wheel"
+    return frames
+
+
+def drop_clipped(tracks: list[dict], H: np.ndarray, frame_size: tuple[int, int],
+                 margin_px: float = 2.0) -> tuple[list[dict], dict]:
+    """Keep only what the frame's edge leaves measurable on a vehicle with visible wheels.
+
+    A car cut by the edge has no true lowest pixel, but a whole wheel still touches the
+    road where it appears to. A car cut in most frames is measured on its wheels alone;
+    otherwise its cut frames need a followed wheel that is itself uncut. Anything else is
+    treated as unobserved. Returns (tracks, {track id: frames dropped})."""
+    w, h = frame_size
+    cut = lambda b: b[0] <= margin_px or b[1] <= margin_px or b[2] >= w - margin_px or b[3] >= h - margin_px  # noqa: E731
+    wheel_tracks = [t for t in tracks if t["concept"] == "wheel"]
+    out, report = [], {}
+    for t in tracks:
+        if t["concept"] == "wheel" or not any(f.get("contact_src") for f in t["frames"]):
+            out.append(t)
+            continue
+        if np.mean([cut(f["box"]) for f in t["frames"]]) > MOSTLY_CUT:
+            frames = _stitched_wheels(t, wheel_tracks, H, cut)
+        else:
+            frames = [f if not f.get("contact_px") or not cut(f.get("wheel_box") or f["box"]) else {**f, "contact_px": None}
+                      for f in t["frames"]]
+        n = sum(1 for f in frames if not f.get("contact_px"))
+        if n:
+            report[t["id"]] = n
         out.append({**t, "frames": frames})
     return out, report
 

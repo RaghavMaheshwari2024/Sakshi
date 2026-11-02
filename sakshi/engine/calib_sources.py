@@ -23,6 +23,8 @@ SAT_UNKNOWN_SIGMA_M = 0.75  # pasted coordinates: the zoom they were read at is 
 SAT_CLICK_MAP_PX = 1.5  # how many map pixels a careful click may be off
 MAX_SAT_SPAN_M = 1000.0
 ESTIMATE_SIGMA_LOG_SCALE = 0.5  # errors of this order were measured against CARLA's true calibrations
+VEHICLE_POINT_SIGMA_M = 0.1  # the shared scale carries the doubt; the road's shape is fitted, not clicked
+VEHICLE_NOT_CHECKED = "not checked: the road's size comes from one car's wheelbase, so measure the road markings to test this claim"
 ESTIMATE_NOT_CHECKED = "not checked: the road's size was only estimated, so calibrate from the map or road markings to test this claim"
 
 # Typical road geometry, not a measurement of this road. Sigma is what we allow
@@ -141,6 +143,21 @@ def _estimated(body: dict) -> hg.Calibration:
     return cal
 
 
+def _vehicle(body: dict) -> hg.Calibration:
+    wheelbase = float(body.get("wheelbase_m") or 0)
+    sigma = float(body.get("sigma_log_scale") or 0)
+    if not 1.5 <= wheelbase <= 8:
+        raise ValueError("A wheelbase must be between 1.5 m and 8 m.")
+    if not 0.05 <= sigma <= 1:
+        raise ValueError("A wheelbase calibration needs its uncertainty.")
+    cal = hg.fit(body["image_pts"], body["ground_pts_m"])
+    _check_not_mirrored(cal)
+    cal.method = "vehicle"
+    cal.ground_model = {"kind": "estimated", "sigma_log_scale": sigma, "sigma_m": VEHICLE_POINT_SIGMA_M}
+    cal.source = {"wheelbase_m": wheelbase, "label": f"Scaled from a car's {wheelbase:g} m wheelbase"}
+    return cal
+
+
 def resolve(body: dict) -> hg.Calibration:
     """The calibration a request describes. Raises ValueError with a message for the user."""
     method = body.get("method", "manual")
@@ -152,6 +169,8 @@ def resolve(body: dict) -> hg.Calibration:
         return _satellite(body)
     if method == "estimated":
         return _estimated(body)
+    if method == "vehicle":
+        return _vehicle(body)
     raise ValueError(f"Unknown calibration method: {method}")
 
 
@@ -164,6 +183,9 @@ def basis_text(cal: hg.Calibration) -> str | None:
     if cal.method == "estimated":
         return ("road size estimated from traffic, not measured: speeds are rough, can be far off, "
                 "and statements were not checked")
+    if cal.method == "vehicle":
+        return (f"road scale taken from a car's wheelbase of {cal.source['wheelbase_m']:g} m, not measured on the road: "
+                "speeds are approximate and statements were not checked")
     if cal.method == "satellite":
         return f"road positions read from satellite imagery (allowed for: {m['sigma_m']} m per point, 1 sigma)"
     return None

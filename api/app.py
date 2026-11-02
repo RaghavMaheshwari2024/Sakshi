@@ -9,6 +9,7 @@ Endpoints the UI uses:
                                    ground_pts_m | preset | geo_pts + map_zoom; stop_line_m, clock_box_px,
                                    signal_light_px (the clicked signal head that governs the stop line)
   POST /cases/{id}/estimate-calibration   rough calibration from SAM's tracks (no verdicts)
+  POST /cases/{id}/wheelbase-calibration  JSON: wheelbase_m; road scale from one car (no verdicts)
   POST /cases/{id}/party           JSON: {"s1": "car-0", ...} (user confirms who drove what)
   GET  /cases/{id}/run             server-sent events: one per pipeline stage, then "done"
   GET  /cases/{id}/case.json       the result
@@ -222,6 +223,30 @@ def estimate_calibration(case_id: str):
     found = auto_calib.suggest(tracks, events.MOVERS, info.width, info.height, info.fps)
     if found is None:
         raise HTTPException(422, "Too few vehicles move clearly through this clip to estimate the road.")
+    return found
+
+
+@app.post("/cases/{case_id}/wheelbase-calibration")
+def wheelbase_calibration(case_id: str, body: dict):
+    """The road's scale from a car crossing the view, given its wheelbase in metres."""
+    from sakshi import config
+    from sakshi.engine import auto_calib
+    from sakshi.meta import sam
+    from sakshi.video import ensure_h264_mp4
+
+    try:
+        wheelbase = float(body["wheelbase_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(400, "Give the car's wheelbase in metres.") from exc
+    if not 1.5 <= wheelbase <= 8:
+        raise HTTPException(400, "A wheelbase must be between 1.5 m and 8 m.")
+    d = _case(case_id)
+    video = ensure_h264_mp4(find_input_video(d), d)
+    info = probe(video)
+    tracks = asyncio.run(sam.track_video(video, list(config.SAM_CONCEPTS) + ["wheel"]))
+    found = auto_calib.from_wheelbase(tracks, wheelbase, info.width, info.height)
+    if found is None:
+        raise HTTPException(422, "No car shows two whole wheels for long enough to use its wheelbase.")
     return found
 
 

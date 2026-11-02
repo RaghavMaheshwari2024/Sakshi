@@ -119,6 +119,8 @@ export const WorkspaceView: React.FC<{ onOpenProcessing: () => void }> = ({ onOp
           <span className="measured">{caseData.clip.frames} frames · {caseData.clip.fps_nominal} fps · {caseData.clip.width}×{caseData.clip.height}</span>
           {caseData.calibration.method === 'estimated'
             ? <span className="text-signal-amber" title="Estimated from traffic. Speeds are rough, and statements were not checked.">rough estimate, not measured</span>
+            : caseData.calibration.method === 'vehicle'
+            ? <span className="text-signal-amber" title={caseData.calibration.source?.label}>scaled from a wheelbase, approximate</span>
             : caseData.calibration.method === 'preset'
             ? <span title={caseData.calibration.source?.label}>road size assumed</span>
             : caseData.calibration.image_pts.length === 4

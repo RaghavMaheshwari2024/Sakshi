@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sakshi.engine import homography as hg  # noqa: E402
-from sakshi.engine.contact import wheel_contacts  # noqa: E402
+from sakshi.engine.contact import drop_clipped, wheel_contacts  # noqa: E402
 
 # 20 px per metre, ground x = px / 20, ground y = py / 20
 H = hg.fit([[0, 0], [400, 0], [0, 400], [400, 400]], [[0, 0], [20, 0], [0, 20], [20, 20]]).H
@@ -59,3 +59,26 @@ def test_no_wheels_leaves_tracks_unchanged():
     tracks = [t for t in _scene() if t["concept"] == "car"]
     out, rep = wheel_contacts(tracks, H)
     assert out == tracks and rep == {}
+
+
+def _close_car(n=30):
+    """A car wider than the frame: one wheel crosses, then the next."""
+    car, a, b = [], [], []
+    for i in range(n):
+        car.append({"i": i, "box": [0, 100, 400, 300], "contact_px": [200.0, 300.0]})
+        if i < 20:
+            a.append({"i": i, "box": [360 - 18 * i, 200, 380 - 18 * i, 230], "contact_px": [370.0 - 18 * i, 230.0]})
+        if i >= 12:
+            b.append({"i": i, "box": [360 - 18 * (i - 12), 200, 380 - 18 * (i - 12), 230], "contact_px": [370.0 - 18 * (i - 12), 230.0]})
+    return [{"id": "car-0", "concept": "car", "frames": car},
+            {"id": "wheel-0", "concept": "wheel", "frames": a}, {"id": "wheel-1", "concept": "wheel", "frames": b}]
+
+
+def test_car_too_close_to_fit_is_measured_on_stitched_wheels():
+    tracks, _ = wheel_contacts(_close_car(), H)
+    out, dropped = drop_clipped(tracks, H, (400, 300))
+    frames = [f for f in out[0]["frames"] if f.get("contact_px")]
+    xs = np.array([f["contact_px"][0] for f in frames])
+    assert len(frames) == 30 and dropped == {}
+    assert np.allclose(np.diff(xs), -18.0, atol=1e-6)  # one steady motion across the hand-over
+

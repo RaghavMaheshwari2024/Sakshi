@@ -7,7 +7,7 @@ import { Button, Notice, Segmented, Skeleton } from './ui';
 
 const SatelliteMap = lazy(() => import('./SatelliteMap'));
 
-export type CalibMethod = 'manual' | 'preset' | 'satellite' | 'estimated';
+export type CalibMethod = 'manual' | 'preset' | 'satellite' | 'estimated' | 'vehicle';
 
 export interface RectSize {
   id: string;
@@ -32,6 +32,7 @@ interface Props {
   onStart: (m: CalibMethod) => void;
   /** Absent where there is no backend case to track. */
   onEstimate?: () => Promise<void>;
+  onWheelbase?: (wheelbaseM: number) => Promise<void>;
   onUndo: () => void;
   onMapPick: (lat: number, lng: number, zoom: number | null) => void;
   onMapMove: (id: string, lat: number, lng: number, zoom: number) => void;
@@ -47,14 +48,28 @@ const NumberField: React.FC<{ label: string; value: number; step: number; onChan
   </label>
 );
 
-export const CalibrationMethodPanel: React.FC<Props> = ({ method, points, rect, onRectChange, onStart, onEstimate, onUndo, onMapPick, onMapMove }) => {
-  const [tab, setTab] = useState<CalibMethod>(method);
+export const CalibrationMethodPanel: React.FC<Props> = ({ method, points, rect, onRectChange, onStart, onEstimate, onWheelbase, onUndo, onMapPick, onMapMove }) => {
+  const [tab, setTab] = useState<CalibMethod>(method === 'vehicle' ? 'estimated' : method);
+  const [wheelbase, setWheelbase] = useState('');
   const [place, setPlace] = useState('');
   const [placeNote, setPlaceNote] = useState<string | null>(null);
   const [target, setTarget] = useState<[number, number] | null>(null);
   const [typed, setTyped] = useState('');
   const [estimating, setEstimating] = useState(false);
   const [estimateError, setEstimateError] = useState<string | null>(null);
+
+  const fromWheelbase = async () => {
+    if (!onWheelbase) return;
+    setEstimating(true);
+    setEstimateError(null);
+    try {
+      await onWheelbase(Number(wheelbase));
+    } catch (err) {
+      setEstimateError(err instanceof Error ? err.message : 'That did not work.');
+    } finally {
+      setEstimating(false);
+    }
+  };
 
   const estimate = async () => {
     if (!onEstimate) return;
@@ -141,6 +156,17 @@ export const CalibrationMethodPanel: React.FC<Props> = ({ method, points, rect, 
             </Button>
           )}
           {!onEstimate && <p className="text-[12px] text-bone-500">Start a new case to use this.</p>}
+          <div className="space-y-1.5 border-t border-line pt-2.5">
+            <p>Know the car in the clip? Its wheelbase sets the road’s scale, when two of its wheels are in view. Speeds are approximate and statements are not checked.</p>
+            <div className="flex items-center gap-2">
+              <input type="number" step="0.01" min="1.5" max="8" value={wheelbase} onChange={(e) => setWheelbase(e.target.value)}
+                     aria-label="Wheelbase in metres" placeholder="2.58"
+                     className="measured w-20 rounded border border-line bg-asphalt-850 px-2 py-1 text-[12.5px] text-bone" />
+              <span>m</span>
+              <Button size="sm" variant="secondary" busy={estimating} disabled={!onWheelbase || !wheelbase} onClick={fromWheelbase}>Use wheelbase</Button>
+            </div>
+            {method === 'vehicle' && !estimating && <p className="text-bone">A wheelbase scale is in use.</p>}
+          </div>
           {estimateError && <Notice tone="error">{estimateError}</Notice>}
         </div>
       )}

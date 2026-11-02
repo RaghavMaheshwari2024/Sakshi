@@ -24,6 +24,10 @@ FOCALS = np.linspace(0.45, 0.8, 8)  # times the frame's width: wide CCTV lenses,
 TILTS_DEG = np.linspace(4.0, 65.0, 62)
 
 
+def _cut(box, width: int, height: int) -> bool:
+    return box[0] <= EDGE_PX or box[1] <= EDGE_PX or box[2] >= width - EDGE_PX or box[3] >= height - EDGE_PX
+
+
 def _to_ground(px: np.ndarray, f: float, tilt: float, cx: float, cy: float) -> np.ndarray | None:
     """Pixels to the road, for a camera 1 unit above it. None if any is above the horizon."""
     dx, dy = (px[:, 0] - cx) / f, (px[:, 1] - cy) / f
@@ -149,3 +153,62 @@ def suggest(tracks: list[dict], concepts: set[str], width: int, height: int, fps
             "focal_px": round(f, 1), "tilt_deg": round(float(np.degrees(tilt)), 1),
             "camera_height_m": round(scale, 2), "scale_spread": round(spread, 3), "cost": round(cost, 3),
             "tracks_used": len(paths)}
+
+
+MIN_WHEEL_PAIRS = 5  # frames showing both wheels, or one car's length is not measured
+WHEELBASE_SIGMA_M = 0.1  # typical spread of a car's wheelbase when the exact model is uncertain
+ONE_VIEW_SIGMA_LOG = 0.1  # one car crossing one view fixes the road's scale only loosely
+
+
+def from_wheelbase(tracks: list[dict], wheelbase_m: float, width: int, height: int) -> dict | None:
+    """The road, scaled by the distance between a car's two wheels on one side.
+
+    The camera is the one that keeps that distance constant as the car crosses and
+    lays the wheels in a straight line. None if no car shows two whole wheels for long enough."""
+    wheels: dict[int, list[dict]] = {}
+    for t in tracks:
+        if t["concept"] == "wheel":
+            for f in t["frames"]:
+                if f.get("contact_px") and not _cut(f["box"], width, height):
+                    wheels.setdefault(f["i"], []).append(f)
+    front, rear = [], []
+    for t in tracks:
+        if t["concept"] != "car":
+            continue
+        for f in t["frames"]:
+            inside = [w for w in wheels.get(f["i"], []) if f["box"][0] <= w["contact_px"][0] <= f["box"][2]]
+            if len(inside) == 2:
+                a, b = sorted(inside, key=lambda w: w["contact_px"][0])
+                rear.append(a["contact_px"])
+                front.append(b["contact_px"])
+    if len(front) < MIN_WHEEL_PAIRS:
+        return None
+    pa, pb = np.array(rear, float), np.array(front, float)
+    cx, cy = width / 2.0, height / 2.0
+    best = None
+    for mult in np.linspace(0.45, 1.3, 35):
+        f = mult * width
+        for tilt in np.radians(np.linspace(2.0, 45.0, 87)):
+            ga, gb = _to_ground(pa, f, tilt, cx, cy), _to_ground(pb, f, tilt, cx, cy)
+            if ga is None or gb is None:
+                continue
+            d = np.linalg.norm(ga - gb, axis=1)
+            both = np.vstack([ga, gb])
+            sv = np.linalg.svd(both - both.mean(0), compute_uv=False)
+            cost = float(d.std() / d.mean() + sv[1] / sv[0])
+            if best is None or cost < best[0]:
+                best = (cost, f, float(tilt), float(d.mean()), float(d.std() / d.mean()))
+    if best is None:
+        return None
+    cost, f, tilt, dist, spread = best
+    scale = wheelbase_m / dist
+    all_px = np.vstack([pa, pb])
+    v0, v1 = max(all_px[:, 1].min() - 0.1 * height, 0.0), min(all_px[:, 1].max() + 0.1 * height, height - 1.0)
+    image_pts = np.array([[0.1 * width, v1], [0.9 * width, v1], [0.9 * width, v0], [0.1 * width, v0]])
+    ground = _to_ground(image_pts, f, tilt, cx, cy)
+    if ground is None:
+        return None
+    sigma = float(np.sqrt((WHEELBASE_SIGMA_M / wheelbase_m) ** 2 + spread ** 2 + ONE_VIEW_SIGMA_LOG ** 2))
+    return {"image_pts": image_pts.round(1).tolist(), "ground_pts_m": (ground * scale).round(3).tolist(),
+            "wheelbase_m": wheelbase_m, "sigma_log_scale": round(sigma, 3), "focal_px": round(f, 1),
+            "tilt_deg": round(float(np.degrees(tilt)), 1), "wheel_pairs": len(pa), "cost": round(cost, 3)}

@@ -27,16 +27,17 @@ export interface CalibrationInfo {
   reproj_rms_m: number;
   reproj_max_m: number;
   /** Where the ground coordinates came from. Absent on older cases: typed points. */
-  method?: "manual" | "preset" | "satellite" | "estimated";
+  method?: "manual" | "preset" | "satellite" | "estimated" | "vehicle";
   ground_model?: {
     kind: "rect" | "points" | "estimated";
+    sigma_log_scale?: number;
     width_m?: number;
     length_m?: number;
     sigma_width_m?: number;
     sigma_length_m?: number;
     sigma_m?: number;
   } | null;
-  source?: { preset_id?: string; label?: string; geo_pts?: [number, number][]; map_zoom?: number | null };
+  source?: { preset_id?: string; label?: string; wheelbase_m?: number; geo_pts?: [number, number][]; map_zoom?: number | null };
   warnings?: string[];
   stop_line_m: [number, number][] | null;
   /** Camera pose recovered from the calibration (for the 3D replay). */

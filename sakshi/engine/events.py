@@ -204,21 +204,24 @@ def window_speed(res: TrackResult, t0: float, t1: float) -> dict | None:
 def mark_reliable(results: dict[str, TrackResult], tracks: list[dict], H: np.ndarray,
                   frame_size: tuple[int, int], margin_s: float = 0.2) -> None:
     """Which frames of each track can support a speed. Not those where the box is
-    cut by the picture's edge (its bottom is no longer the tyre line), nor those too
-    far away for the image to place the vehicle, nor those just beside either,
-    which the smoother mixes in. Stored as `reliable` in the track's results."""
+    cut by the picture's edge (its bottom is no longer the tyre line) unless a whole
+    wheel marks the road, nor those too far away for the image to place the vehicle,
+    nor those just beside a bad frame the smoother mixed in. Stored as `reliable` in
+    the track's results."""
     by_id = {t["id"]: t for t in tracks}
     for tid, r in results.items():
-        boxes = _boxes_by_frame(by_id[tid]) if tid in by_id else {}
+        frames = {f["i"]: f for f in by_id[tid]["frames"]} if tid in by_id else {}
         good, last = np.ones(len(r.frames), bool), True
         for k, i in enumerate(r.frames):
-            box = boxes.get(int(i))
-            if box is not None:
-                last = not _clipped(box, frame_size) and _resolved(H, box)
+            f = frames.get(int(i))
+            if f is not None:
+                box = f["box"]
+                on_wheel = f.get("wheel_box") and f.get("contact_px")
+                last = (on_wheel or not _clipped(box, frame_size)) and _resolved(H, box)
             good[k] = last
         t = r.nominal.t
         keep = good.copy()
-        for k in np.flatnonzero(~good):
+        for k in np.flatnonzero(~good & r.nominal.observed):
             keep[np.abs(t - t[k]) <= margin_s] = False
         r.extras["reliable"] = keep.tolist()
 

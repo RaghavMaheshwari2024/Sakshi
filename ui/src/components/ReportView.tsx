@@ -262,7 +262,9 @@ export const ReportView: React.FC<ReportViewProps> = ({ onBack }) => {
             <div>
               <h3 className="font-medium text-[#161614]">Calibration</h3>
               <p className="mt-1">{calibration.image_pts.length} point pairs fit one road-plane homography.</p>
-              <p className="mt-1 font-mono text-[12.5px]">RMS {calibration.reproj_rms_m.toFixed(3)} m, worst {calibration.reproj_max_m.toFixed(3)} m</p>
+              {calibration.method === 'vehicle'
+                ? <p className="mt-1">{calibration.source?.label}, not measured on the road. Speeds are approximate and statements are not checked.</p>
+                : <p className="mt-1 font-mono text-[12.5px]">RMS {calibration.reproj_rms_m.toFixed(3)} m, worst {calibration.reproj_max_m.toFixed(3)} m</p>}
             </div>
             <div>
               <h3 className="font-medium text-[#161614]">Time</h3>

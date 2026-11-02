@@ -255,3 +255,28 @@ def test_an_estimated_calibration_never_gives_a_verdict(tmp_path):
     out = run(tmp_path, progress=lambda *_: None, tracks_override=case["tracks"], mc=MCConfig(n=3))
     assert out["claims"][0]["verdict"] == "cant_tell" and "only estimated" in out["claims"][0]["reason"]
     assert out["calibration"]["method"] == "estimated" and "not measured" in out["facts"]["calibration_basis"]
+
+
+def test_wheelbase_scale_comes_from_the_two_wheels():
+    from sakshi.engine import auto_calib as ac
+
+    car = [{"i": i, "box": [0, 100, 800, 450]} for i in range(8)]
+    wheels = [{"id": f"w{k}", "concept": "wheel", "frames": [
+        {"i": i, "box": [x - 40 - 5 * i, 380, x - 5 * i + 40, 440], "contact_px": [x - 5 * i, 440.0]} for i in range(8)]}
+        for k, x in enumerate((250.0, 600.0))]
+    tracks = [{"id": "car-0", "concept": "car", "frames": car}, *wheels]
+    found = ac.from_wheelbase(tracks, 2.5, 848, 478)
+    cal = cs.resolve({"method": "vehicle", **{k: found[k] for k in ("image_pts", "ground_pts_m", "wheelbase_m", "sigma_log_scale")}})
+    g = hg.img_to_ground(cal.H, np.array([[250.0, 440.0], [600.0, 440.0]]))
+    assert np.linalg.norm(g[0] - g[1]) == pytest.approx(2.5, abs=0.05)
+    assert cal.method == "vehicle" and "not measured" in cs.basis_text(cal)
+    assert ac.from_wheelbase(tracks[:2], 2.5, 848, 478) is None  # one wheel gives no length
+
+
+def test_wheelbase_must_be_a_car_length_with_its_doubt():
+    body = {"method": "vehicle", "image_pts": corners(8, 20), "ground_pts_m": [[0, 0], [8, 0], [8, 20], [0, 20]]}
+    with pytest.raises(ValueError):
+        cs.resolve({**body, "wheelbase_m": 0.5, "sigma_log_scale": 0.1})
+    with pytest.raises(ValueError):
+        cs.resolve({**body, "wheelbase_m": 2.5})
+

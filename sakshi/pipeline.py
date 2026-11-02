@@ -475,7 +475,7 @@ def _run(case_dir: Path, progress: Progress, tracks_override: list[dict] | None,
                                      progress, ticks_override=inp.get("clock_ticks_override"), stats=stats)
     progress("clock", {"method": clk.method})
 
-    contact_mode = inp.get("contact_mode", config.CONTACT_MODE)
+    contact_mode = inp.get("contact_mode") or ("wheels" if cal_in.get("method") == "vehicle" else config.CONTACT_MODE)
     if tracks_override is not None:
         tracks = tracks_override
     else:
@@ -494,6 +494,9 @@ def _run(case_dir: Path, progress: Progress, tracks_override: list[dict] | None,
     if contact_mode == "wheels":
         tracks, contact_report = contact_mod.wheel_contacts(tracks, calib.H)
         progress("tracking", {"wheel_contacts": contact_report})
+        tracks, cut_frames = contact_mod.drop_clipped(tracks, calib.H, (info.width, info.height))
+        if cut_frames:
+            progress("tracking", {"cut_by_frame_edge": cut_frames})
 
     # A contact point hidden behind a vehicle in front is not a measurement.
     movers_all = [t for t in tracks if t["concept"] in events.MOVERS]
@@ -598,8 +601,9 @@ def _run(case_dir: Path, progress: Progress, tracks_override: list[dict] | None,
         checked = [claims_mod.evaluate(c, results, ctx) for c in raw_claims]
         progress("claims", {"verdicts": [c["verdict"] for c in checked]})
 
-    if calib.method == "estimated":  # a rough first look is not evidence against anyone
-        checked = [{**c, "verdict": "cant_tell", "reason": calib_sources.ESTIMATE_NOT_CHECKED} for c in checked]
+    if calib.method in ("estimated", "vehicle"):  # a rough first look is not evidence against anyone
+        reason = calib_sources.VEHICLE_NOT_CHECKED if calib.method == "vehicle" else calib_sources.ESTIMATE_NOT_CHECKED
+        checked = [{**c, "verdict": "cant_tell", "reason": reason} for c in checked]
 
     facts = {
         "impact": impact,
