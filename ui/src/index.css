@@ -142,8 +142,8 @@ input[type='number']::-webkit-outer-spin-button {
   z-index: 25;
   pointer-events: none;
   background:
-    radial-gradient(60% 55% at 100% 0%, rgba(242, 192, 55, 0.075), transparent 72%),
-    radial-gradient(55% 50% at 0% 100%, rgba(242, 192, 55, 0.06), transparent 72%);
+    radial-gradient(75% 70% at 100% 0%, rgba(242, 192, 55, 0.17), transparent 75%),
+    radial-gradient(70% 65% at 0% 100%, rgba(242, 192, 55, 0.14), transparent 75%);
 }
 
 /* The report is a document: printing drops the app around it. */
