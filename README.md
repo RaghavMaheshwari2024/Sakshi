@@ -12,11 +12,29 @@ It reports measurements to support expert review and never states who is at faul
 
 You need [Docker](https://docs.docker.com/get-docker/). No API key or account is needed for this path.
 
+**1. Check that port 8000 is free** (Linux or macOS). No output from either command means it is free:
+
+```bash
+docker ps --filter publish=8000
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
+If it is in use, either use another port (step 2 shows how), or stop what is on it. First make sure you don't need it:
+
+```bash
+docker stop $(docker ps -q --filter publish=8000)   # if a Docker container holds it
+kill $(lsof -t -iTCP:8000 -sTCP:LISTEN)             # if another program holds it
+```
+
+**2. Build and run:**
+
 ```bash
 git clone https://github.com/RaghavMaheshwari2024/Sakshi.git && cd Sakshi && docker build -t sakshi . && docker run --rm -p 8000:8000 sakshi
 ```
 
-Open **http://localhost:8000**. The first build takes a few minutes. If port 8000 is taken, use `-p 8080:8000` and open port 8080.
+Open **http://localhost:8000**. The first build takes a few minutes.
+
+To use another port, change the first number, for example `-p 8080:8000`, and open **http://localhost:8080**. The same applies to the other `docker run` command below.
 
 ### What to check without a key
 
