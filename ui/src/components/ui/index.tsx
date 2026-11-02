@@ -7,11 +7,13 @@ import type { Claim } from '../../types/case';
 
 // ------------------------------------------------------------------ brand
 
-export const Mark: React.FC<{ className?: string }> = ({ className = 'h-5 w-5' }) => (
-  <svg viewBox="0 0 32 32" className={className} aria-hidden="true">
-    <path d="M3 16c3.600-5.700 7.900-8.500 13-8.500S25.400 10.300 29 16c-3.600 5.700-7.900 8.500-13 8.500S6.600 21.700 3 16Z"
-          fill="none" stroke="#edeae3" strokeWidth="1.8" />
-    <circle cx="16" cy="16" r="3.800" fill="#f2c037" />
+export const Mark: React.FC<{ className?: string }> = ({ className = 'h-6 w-6' }) => (
+  <svg viewBox="0 0 64 64" className={className} aria-hidden="true">
+    <path d="M2 33C13 19 23 10 32 10s19 9 30 23C50 23 41 16 32 16S14 23 2 33Z" fill="#f2c037" />
+    <path d="M2 33c5 7 11 13 18.500 16.500M62 33c-5 7-11 13-18.500 16.500M26.500 20.100A14 14 0 0 0 22.500 43.300M37.500 20.100A14 14 0 0 1 41.500 43.300"
+          fill="none" stroke="#f2c037" strokeWidth="3" strokeLinecap="round" />
+    <path fillRule="evenodd" fill="#f2c037"
+          d="M29.500 15h5L41 59H23ZM30.800 22v5h2.400v-5ZM30.700 32v6h2.600v-6ZM30.600 43v6h2.800v-6ZM30.500 53v6h3v-6Z" />
   </svg>
 );
 
