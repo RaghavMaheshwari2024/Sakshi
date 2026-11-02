@@ -324,6 +324,21 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
     }
   };
 
+  const estimateFromTraffic = async () => {
+    const res = await fetch(`/cases/${caseId}/estimate-calibration`, { method: 'POST' });
+    if (!res.ok) {
+      const detail = await res.json().then((j) => j.detail).catch(() => null);
+      throw new Error(detail || `The backend returned ${res.status}.`);
+    }
+    const found: { image_pts: [number, number][]; ground_pts_m: [number, number][] } = await res.json();
+    startMethod('estimated');
+    setSaveStatus('idle');
+    setSaveError(null);
+    const next = found.image_pts.map(([u, v], i) => ({ id: `P${i + 1}`, u, v, x: found.ground_pts_m[i][0], y: found.ground_pts_m[i][1] }));
+    setPoints(next);
+    solveHomography(next);
+  };
+
   const changeRect = (r: RectSize) => {
     setRect(r);
     if (method !== 'preset') return;
@@ -731,6 +746,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
         setSelectedPointId(clicked.id);
         return;
       }
+      if (method === 'estimated') return; // its points follow from the estimate
       if (method === 'preset') {
         if (points.length >= 4) return;
         const g = rectCorners(rect)[points.length];
@@ -885,7 +901,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
               // The coarsest view any point was picked at; unknown if any was pasted.
               map_zoom: zooms.includes(null) ? null : Math.min(...(zooms as number[])),
             }
-          : { method, ground_pts_m: points.map((p) => [p.x, p.y]) };
+          : { method, ground_pts_m: points.map((p) => [p.x, p.y]) }; // typed, or estimated from traffic
 
     const payload = {
       image_pts: points.map((p) => [p.u, p.v]),
@@ -997,6 +1013,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
             <span>
               {activeTool === 'points' && method === 'manual' && 'Click to add a point. Drag a pin to move it.'}
               {activeTool === 'points' && method === 'preset' && (points.length < 4 ? `Click corner ${points.length + 1} of 4.` : 'Drag a corner to refine it.')}
+              {activeTool === 'points' && method === 'estimated' && 'A rough estimate from traffic. Not a measurement.'}
               {activeTool === 'points' && method === 'satellite' && (points.some((p) => p.pending) ? 'Now click the same mark on the map.' : 'Click a road mark, then the same mark on the map.')}
               {activeTool === 'stopline' && 'Drag the ends of the stop line.'}
               {activeTool === 'clock' && 'Drag a box over the burned-in clock.'}
@@ -1020,6 +1037,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({
               rect={rect}
               onRectChange={changeRect}
               onStart={startMethod}
+              onEstimate={caseId ? estimateFromTraffic : undefined}
               onUndo={undoMethodPoint}
               onMapPick={handleMapPick}
               onMapMove={handleMapMove}

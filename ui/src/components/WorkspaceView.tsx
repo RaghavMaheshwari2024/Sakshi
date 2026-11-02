@@ -117,7 +117,9 @@ export const WorkspaceView: React.FC<{ onOpenProcessing: () => void }> = ({ onOp
         </dl>
         <div className="ml-auto hidden items-center gap-3 text-[12px] text-bone-500 2xl:flex">
           <span className="measured">{caseData.clip.frames} frames · {caseData.clip.fps_nominal} fps · {caseData.clip.width}×{caseData.clip.height}</span>
-          {caseData.calibration.method === 'preset'
+          {caseData.calibration.method === 'estimated'
+            ? <span className="text-signal-amber" title="Estimated from traffic. Speeds are rough, and statements were not checked.">rough estimate, not measured</span>
+            : caseData.calibration.method === 'preset'
             ? <span title={caseData.calibration.source?.label}>road size assumed</span>
             : caseData.calibration.image_pts.length === 4
               ? <span title="Exactly 4 points always fit, so the fit error says nothing">calibration: 4 points, no check</span>

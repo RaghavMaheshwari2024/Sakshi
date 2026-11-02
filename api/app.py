@@ -8,6 +8,7 @@ Endpoints the UI uses:
   POST /cases/{id}/calibration     JSON: method (manual|preset|satellite), image_pts, then
                                    ground_pts_m | preset | geo_pts + map_zoom; stop_line_m, clock_box_px,
                                    signal_light_px (the clicked signal head that governs the stop line)
+  POST /cases/{id}/estimate-calibration   rough calibration from SAM's tracks (no verdicts)
   POST /cases/{id}/party           JSON: {"s1": "car-0", ...} (user confirms who drove what)
   GET  /cases/{id}/run             server-sent events: one per pipeline stage, then "done"
   GET  /cases/{id}/case.json       the result
@@ -203,6 +204,25 @@ def calibration(case_id: str, body: dict):
     return {"reproj_rms_m": cal.rms_err_m, "reproj_max_m": cal.max_err_m, "H": cal.H.tolist(),
             "ground_pts_m": cal.ground_pts.tolist(), "ground_model": cal.ground_model,
             "warnings": calib_sources.warnings(cal, info.width, info.height)}
+
+
+@app.post("/cases/{case_id}/estimate-calibration")
+def estimate_calibration(case_id: str):
+    """A rough calibration from SAM's tracks, for a first look. Tracking is cached by
+    clip, so the pipeline reuses it. Claims are not checked against this calibration."""
+    from sakshi import config
+    from sakshi.engine import auto_calib, events
+    from sakshi.meta import sam
+    from sakshi.video import ensure_h264_mp4
+
+    d = _case(case_id)
+    video = ensure_h264_mp4(find_input_video(d), d)
+    info = probe(video)
+    tracks = asyncio.run(sam.track_video(video, list(config.SAM_CONCEPTS)))
+    found = auto_calib.suggest(tracks, events.MOVERS, info.width, info.height, info.fps)
+    if found is None:
+        raise HTTPException(422, "Too few vehicles move clearly through this clip to estimate the road.")
+    return found
 
 
 @app.post("/cases/{case_id}/party")

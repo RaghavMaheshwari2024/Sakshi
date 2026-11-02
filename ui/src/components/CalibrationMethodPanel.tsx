@@ -1,13 +1,13 @@
 /** How the road's real size is established when nobody has surveyed it. */
 import React, { Suspense, lazy, useState } from 'react';
-import { Crosshair, MapPin as MapPinIcon, Search, Undo2 } from 'lucide-react';
+import { Crosshair, MapPin as MapPinIcon, Search, Sparkles, Undo2 } from 'lucide-react';
 import { ROAD_PRESETS } from '../content/calibrationPresets';
 import { parseLatLng } from '../utils/geo';
 import { Button, Notice, Segmented, Skeleton } from './ui';
 
 const SatelliteMap = lazy(() => import('./SatelliteMap'));
 
-export type CalibMethod = 'manual' | 'preset' | 'satellite';
+export type CalibMethod = 'manual' | 'preset' | 'satellite' | 'estimated';
 
 export interface RectSize {
   id: string;
@@ -30,6 +30,8 @@ interface Props {
   rect: RectSize;
   onRectChange: (r: RectSize) => void;
   onStart: (m: CalibMethod) => void;
+  /** Absent where there is no backend case to track. */
+  onEstimate?: () => Promise<void>;
   onUndo: () => void;
   onMapPick: (lat: number, lng: number, zoom: number | null) => void;
   onMapMove: (id: string, lat: number, lng: number, zoom: number) => void;
@@ -45,12 +47,27 @@ const NumberField: React.FC<{ label: string; value: number; step: number; onChan
   </label>
 );
 
-export const CalibrationMethodPanel: React.FC<Props> = ({ method, points, rect, onRectChange, onStart, onUndo, onMapPick, onMapMove }) => {
+export const CalibrationMethodPanel: React.FC<Props> = ({ method, points, rect, onRectChange, onStart, onEstimate, onUndo, onMapPick, onMapMove }) => {
   const [tab, setTab] = useState<CalibMethod>(method);
   const [place, setPlace] = useState('');
   const [placeNote, setPlaceNote] = useState<string | null>(null);
   const [target, setTarget] = useState<[number, number] | null>(null);
   const [typed, setTyped] = useState('');
+  const [estimating, setEstimating] = useState(false);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+
+  const estimate = async () => {
+    if (!onEstimate) return;
+    setEstimating(true);
+    setEstimateError(null);
+    try {
+      await onEstimate();
+    } catch (err) {
+      setEstimateError((err as Error).message);
+    } finally {
+      setEstimating(false);
+    }
+  };
 
   const placed = points.length;
   const awaitingMap = method === 'satellite' && points.some((p) => p.pending);
@@ -97,6 +114,7 @@ export const CalibrationMethodPanel: React.FC<Props> = ({ method, points, rect, 
             { value: 'preset', label: 'Road markings', title: 'Assume standard road sizes' },
             { value: 'satellite', label: 'Satellite map', title: 'Match points on a satellite map' },
             { value: 'manual', label: 'I measured it', title: 'Type measured ground coordinates' },
+            { value: 'estimated', label: 'Estimate', title: 'A rough first look from traffic. Not recommended.' },
           ]}
         />
       </div>
@@ -105,6 +123,25 @@ export const CalibrationMethodPanel: React.FC<Props> = ({ method, points, rect, 
         <div className="space-y-2 text-[12.5px] text-bone-300">
           <p>Best if someone has surveyed the site: click road points and type their positions in metres.</p>
           {method !== 'manual' && <Button size="sm" onClick={() => onStart('manual')}>Go back to typed points</Button>}
+        </div>
+      )}
+
+      {tab === 'estimated' && (
+        <div className="space-y-2.5 text-[12.5px] leading-relaxed text-bone-300">
+          <Notice tone="warn">
+            <span className="text-bone">Not recommended.</span> Speeds can be off by 40% or more, and sometimes far further. Statements are not checked in this mode.
+          </Notice>
+          <p>For a first look with no clicks. SAM 3.1 tracks the traffic, and Sakshi estimates the camera and road from how vehicles move and their typical size.</p>
+          {method === 'estimated' && !estimating ? (
+            <p className="text-bone">A rough estimate is in use. For real measurements, use the satellite map or road markings.</p>
+          ) : (
+            <Button size="sm" busy={estimating} disabled={!onEstimate} icon={<Sparkles className="h-3.5 w-3.5" />} onClick={estimate}
+                    title={onEstimate ? 'Tracks the clip, which can take a minute' : 'Available on a new case'}>
+              {estimating ? 'Tracking the traffic…' : 'Estimate from traffic'}
+            </Button>
+          )}
+          {!onEstimate && <p className="text-[12px] text-bone-500">Start a new case to use this.</p>}
+          {estimateError && <Notice tone="error">{estimateError}</Notice>}
         </div>
       )}
 

@@ -598,6 +598,9 @@ def _run(case_dir: Path, progress: Progress, tracks_override: list[dict] | None,
         checked = [claims_mod.evaluate(c, results, ctx) for c in raw_claims]
         progress("claims", {"verdicts": [c["verdict"] for c in checked]})
 
+    if calib.method == "estimated":  # a rough first look is not evidence against anyone
+        checked = [{**c, "verdict": "cant_tell", "reason": calib_sources.ESTIMATE_NOT_CHECKED} for c in checked]
+
     facts = {
         "impact": impact,
         "closest_approach": closest,

@@ -24,6 +24,9 @@ class Calibration:
         m = self.ground_model
         if m is None:
             return self.ground_pts + rng.normal(0, default_sigma_m, self.ground_pts.shape)
+        if m["kind"] == "estimated":  # the whole road's scale is in doubt, not each point
+            scale = float(np.exp(rng.normal(0, m["sigma_log_scale"])))
+            return self.ground_pts * scale + rng.normal(0, m["sigma_m"], self.ground_pts.shape)
         if m["kind"] == "points":
             return self.ground_pts + rng.normal(0, m["sigma_m"], self.ground_pts.shape)
         # One rectangle per draw: an error in the assumed size is shared by all corners.

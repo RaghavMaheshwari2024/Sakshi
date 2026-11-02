@@ -27,9 +27,9 @@ export interface CalibrationInfo {
   reproj_rms_m: number;
   reproj_max_m: number;
   /** Where the ground coordinates came from. Absent on older cases: typed points. */
-  method?: "manual" | "preset" | "satellite";
+  method?: "manual" | "preset" | "satellite" | "estimated";
   ground_model?: {
-    kind: "rect" | "points";
+    kind: "rect" | "points" | "estimated";
     width_m?: number;
     length_m?: number;
     sigma_width_m?: number;

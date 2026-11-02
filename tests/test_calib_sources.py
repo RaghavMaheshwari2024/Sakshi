@@ -187,3 +187,71 @@ def test_api_stores_the_resolved_ground_and_refuses_bad_clicks(tmp_path, monkeyp
     assert not (d / "case.json").exists()  # stale results never survive a calibration change
     r = client.post("/cases/c1/calibration", json={"method": "preset", "image_pts": corners(3.5, 3)[:3], "preset": {"id": "lane_zebra"}})
     assert r.status_code == 400 and "exactly 4" in r.json()["detail"]
+
+
+def _moving_tracks():
+    """Vehicles with steady straight paths, seen through a real camera model."""
+    from sakshi.engine import auto_calib as ac
+
+    tracks = []
+    for n, (x0, y0, vx, vy) in enumerate([(-8, 12, 6, 0.0), (8, 20, -7, 0.0), (-3, 8, 0.0, 8), (5, 30, -6, 0.0)]):
+        frames = []
+        for i in range(0, 60):
+            x, y = x0 + vx * i / 25, y0 + vy * i / 25
+            g = np.array([[x, y], [x - 2.2, y], [x + 2.2, y]])
+            img = hg.ground_to_img(H_TRUE, g)
+            frames.append({"i": i, "box": [img[1, 0], img[0, 1] - 40, img[2, 0], img[0, 1]], "contact_px": img[0].tolist()})
+        tracks.append({"id": f"car-{n}", "concept": "car", "frames": frames})
+    return ac, tracks
+
+
+def test_estimate_needs_enough_moving_vehicles():
+    ac, tracks = _moving_tracks()
+    assert ac.suggest(tracks[:1], {"car"}, 1280, 720, 25.0) is None
+    still = [{**t, "frames": [{**f, "contact_px": t["frames"][0]["contact_px"]} for f in t["frames"]]} for t in tracks]
+    assert ac.suggest(still, {"car"}, 1280, 720, 25.0) is None
+
+
+def test_estimate_copes_with_vehicles_that_stop():
+    # A vehicle waiting partway through has no heading while stopped.
+    ac, tracks = _moving_tracks()
+    for t in tracks[:2]:
+        for f in t["frames"][30:40]:
+            f["contact_px"] = t["frames"][30]["contact_px"]
+            f["box"] = t["frames"][30]["box"]
+    out = ac.suggest(tracks, {"car"}, 1280, 720, 25.0)
+    assert out is None or json.dumps(out, allow_nan=False)
+
+
+def test_estimated_calibration_carries_its_doubt_as_one_scale():
+    body = {"method": "estimated", "image_pts": corners(8, 20), "ground_pts_m": [[0, 0], [8, 0], [8, 20], [0, 20]]}
+    cal = cs.resolve(body)
+    assert cal.method == "estimated" and "not measured" in cs.basis_text(cal)
+    rng = np.random.default_rng(0)
+    widths = [np.ptp(cal.sample_ground(rng, 0.1)[:2, 0]) for _ in range(400)]
+    assert np.std(np.log(widths)) == pytest.approx(cs.ESTIMATE_SIGMA_LOG_SCALE, abs=0.08)
+
+
+def test_other_methods_ignore_the_estimate_fields():
+    ground = [[0, 0], [4, 0], [4, 6], [0, 6]]
+    img = hg.ground_to_img(H_TRUE, np.array(ground, float)).tolist()
+    assert cs.resolve({"image_pts": img, "ground_pts_m": ground}).ground_model is None
+
+
+def test_an_estimated_calibration_never_gives_a_verdict(tmp_path):
+    import shutil
+
+    from sakshi.engine.uncertainty import MCConfig
+    from sakshi.pipeline import run
+
+    src = Path(__file__).parent.parent / "ui/public/scenarios/base"
+    case = json.loads((src / "case.json").read_text())
+    shutil.copy(src / "input.mp4", tmp_path)
+    cal = case["calibration"]
+    claim = {k: v for k, v in case["claims"][0].items() if k not in ("verdict", "measured", "reason")}
+    (tmp_path / "case_input.json").write_text(json.dumps({
+        "statements": [], "claims_override": [claim],
+        "calibration": {"method": "estimated", "image_pts": cal["image_pts"], "ground_pts_m": cal["ground_pts_m"]}}))
+    out = run(tmp_path, progress=lambda *_: None, tracks_override=case["tracks"], mc=MCConfig(n=3))
+    assert out["claims"][0]["verdict"] == "cant_tell" and "only estimated" in out["claims"][0]["reason"]
+    assert out["calibration"]["method"] == "estimated" and "not measured" in out["facts"]["calibration_basis"]
