@@ -146,6 +146,44 @@ input[type='number']::-webkit-outer-spin-button {
     radial-gradient(70% 65% at 0% 100%, rgba(242, 192, 55, 0.14), transparent 75%);
 }
 
+/* The light around the front page's replay: a soft halo and beams falling from above. Opacity and transform only, so it stays smooth. */
+.replay-halo {
+  opacity: 0.55;
+  background: radial-gradient(50% 50% at 50% 50%, rgba(242, 192, 55, 0.85), rgba(242, 192, 55, 0.42) 72%, transparent 100%);
+  filter: blur(46px);
+}
+.replay-rays {
+  opacity: 0.8;
+  background: conic-gradient(
+    from 150deg at 50% 0%,
+    transparent 0deg,
+    rgba(242, 192, 55, 0.13) 12deg,
+    transparent 22deg,
+    rgba(242, 192, 55, 0.2) 34deg,
+    transparent 44deg,
+    rgba(242, 192, 55, 0.13) 55deg,
+    transparent 60deg
+  );
+  filter: blur(14px);
+  mask-image: linear-gradient(to bottom, #000, transparent 92%);
+  -webkit-mask-image: linear-gradient(to bottom, #000, transparent 92%);
+}
+.replay-stage {
+  box-shadow: 0 0 0 1px rgba(242, 192, 55, 0.12), 0 30px 100px -24px rgba(242, 192, 55, 0.45);
+}
+/* The front page's sections below the opening: road-paint light from alternating sides,
+   painted behind each section's content. */
+.section-glow {
+  background:
+    radial-gradient(60% 75% at 100% 15%, rgba(242, 192, 55, 0.2), transparent 75%),
+    radial-gradient(50% 60% at 0% 95%, rgba(242, 192, 55, 0.13), transparent 75%);
+}
+.section-glow:nth-of-type(even) {
+  background:
+    radial-gradient(60% 75% at 0% 15%, rgba(242, 192, 55, 0.2), transparent 75%),
+    radial-gradient(50% 60% at 100% 95%, rgba(242, 192, 55, 0.13), transparent 75%);
+}
+
 /* The report is a document: printing drops the app around it. */
 @media print {
   html,

@@ -3,7 +3,7 @@ import { RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { IconButton, Segmented } from './ui';
 import { useCaseStore } from '../store/useCaseStore';
 import { getTrackColor } from '../utils/colors';
-import { Trajectory } from '../types/case';
+import { CaseData, Trajectory } from '../types/case';
 
 interface VehicleState {
   x: number;
@@ -128,20 +128,27 @@ function getTrajectoryStateAtTime(traj: Trajectory, currentTime: number): Vehicl
   };
 }
 
+/** Vehicles outside these ranges don't set the frame when a case is only on show. */
+const DISPLAY_RELIABLE_BAND_KMH = 30;
+
 interface TopDownPanelProps {
   className?: string;
+  /** Shows this case at this time instead of the open case: a picture with no controls. */
+  display?: { data: CaseData; time: number };
 }
 
-export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) => {
+export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '', display }) => {
+  const store = useCaseStore();
+  const caseData = display ? display.data : store.caseData;
+  const currentTime = display ? display.time : store.currentTime;
   const {
-    caseData,
-    currentTime,
-    selectedTrack,
+    selectedTrack: openSelection,
     setSelectedTrack,
     replayMode,
     setReplayMode,
     jumpToTime,
-  } = useCaseStore();
+  } = store;
+  const selectedTrack = display ? null : openSelection;
 
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
 
@@ -165,6 +172,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
     if (caseData?.trajectories) {
       for (const traj of caseData.trajectories) {
         for (let i = 0; i < traj.x.length; i++) {
+          if (display && traj.hi90_kmh[i] - traj.lo90_kmh[i] > DISPLAY_RELIABLE_BAND_KMH) continue;
           includePoint(traj.x[i], traj.y[i]);
         }
       }
@@ -252,17 +260,18 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
       },
       stopLine: caseData?.calibration?.stop_line_m || null,
     };
-  }, [caseData]);
+  }, [caseData, Boolean(display)]);
 
   // Compute interpolated states for all trajectories at current time
   const trajectoriesWithState = useMemo(() => {
     if (!caseData?.trajectories) return [];
-    return caseData.trajectories.map((traj) => ({
+    const all = caseData.trajectories.map((traj) => ({
       traj,
       state: getTrajectoryStateAtTime(traj, currentTime),
       color: getTrackColor(traj.track),
     }));
-  }, [caseData?.trajectories, currentTime]);
+    return display ? all.filter(({ state }) => state && !state.isPreEntry && !state.isPostExit) : all;
+  }, [caseData?.trajectories, currentTime, Boolean(display)]);
 
   // Find reference vehicle for Car-Centred mode
   const referenceVehicle = useMemo(() => {
@@ -326,7 +335,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
   return (
     <div className={`relative h-full w-full select-none overflow-hidden bg-asphalt-950 ${className}`}>
       {/* View controls float over the sheet */}
-      <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded bg-asphalt-900/90 p-0.5">
+      {!display && <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded bg-asphalt-900/90 p-0.5">
         <Segmented
           label="Reference frame"
           value={replayMode}
@@ -341,7 +350,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
         {zoomLevel !== 1.0 && (
           <IconButton label="Reset zoom" onClick={() => setZoomLevel(1.0)}><RotateCcw className="h-3.5 w-3.5" /></IconButton>
         )}
-      </div>
+      </div>}
 
         <svg
           className="w-full h-full cursor-crosshair"
@@ -785,6 +794,8 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
         <div className="absolute left-2 top-2 z-10 space-y-px rounded bg-asphalt-900/90 p-1 text-[12px]">
           {trajectoriesWithState.map(({ traj, state, color }) => {
             if (!state) return null;
+            // On show, the list stays short enough not to cover the road.
+            if (display && traj.reliable?.[traj.t.findIndex((x) => x >= currentTime)] === false) return null;
             const isSelected = selectedTrack === traj.track;
             return (
               <button
@@ -800,7 +811,7 @@ export const TopDownPanel: React.FC<TopDownPanelProps> = ({ className = '' }) =>
                   </span>
                   <span className="text-bone">{traj.reliable?.[traj.t.findIndex((x) => x >= currentTime)] === false ? 'not measurable here' : `${state.speed.toFixed(1)} km/h`}</span>
                 </span>
-                <span className="hidden justify-between gap-3 text-[11px] text-bone-500 sm:flex">
+                <span className={`hidden justify-between gap-3 text-[11px] text-bone-500 ${display ? '' : 'sm:flex'}`}>
                   <span>{state.x >= 0 ? '+' : ''}{state.x.toFixed(1)}, {state.y >= 0 ? '+' : ''}{state.y.toFixed(1)} m</span>
                   {state.accel !== null && (
                     <span className={state.accel < -1 ? 'text-signal-red' : state.accel > 1 ? 'text-signal-green' : ''}>

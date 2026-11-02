@@ -1,15 +1,16 @@
 /**
  * The front page: what Sakshi is, for whom, and proof, in one scroll. The opening
- * shows a real camera frame with its real masks (public/overview, exported from a
- * case); the other exhibits are drawn from the base scenario's case.json and the
+ * replays a real London camera with its real case (public/overview, exported from a
+ * case); the method's exhibits are drawn from the base scenario's case.json and the
  * validation results. The two road-safety figures are cited at the foot.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Play } from 'lucide-react';
 import { ActiveView } from './AppBar';
 import { ClaimLine } from './ClaimLine';
+import { HeroReplay } from './HeroReplay';
 import { Button, Mark, VerdictTag } from './ui';
-import type { CaseData, Claim } from '../types/case';
+import type { CaseData } from '../types/case';
 import { loadScenarioCase, scenarioThumbUrl } from '../utils/scenarios';
 import { Benchmark, loadBenchmark, summarise } from '../utils/benchmark';
 import { droppedPositions, strongestContradiction } from '../utils/caseFacts';
@@ -19,6 +20,13 @@ import { MODELS } from '../content/models';
 import { countTo, gsap, ScrollTrigger, SplitText, useGSAP, useReveal, withMotion } from '../lib/motion';
 
 const STORY_CASE = 'base';
+/** The opening replay: a real London camera and its case, exported to public/overview. */
+const REPLAY_VIDEO = '/overview/replay.mp4';
+const REPLAY_CASE_URL = '/overview/replay_case.json';
+const REPLAY_REST_FRAME = 206;
+
+/** The demo's YouTube id. Its section and button stay hidden until this is set. */
+const DEMO_VIDEO_ID = '';
 
 const AUDIENCE = [
   ['Surveyors and insurers', 'A measured account of the moments before impact, with its uncertainty stated, to set against each party’s version.'],
@@ -28,49 +36,13 @@ const AUDIENCE = [
 
 const STEPS = [
   { id: 'track', model: 'SAM 3.1', title: 'Find every road user', body: 'SAM 3.1 tracks each vehicle pixel by pixel. The lowest band of its mask gives the point where tyre meets road.' },
-  { id: 'time', model: 'Muse Spark', title: 'Recover true time', body: 'Recorders drop frames and still claim 25 fps. Muse Spark reads the burned-in clock; the vehicles’ own motion shows where frames went missing.' },
-  { id: 'ground', model: 'Engine', title: 'Turn pixels into metres', body: 'A few clicks on road markings fit the ground plane. Tracks become real paths you could lay a tape measure along.' },
+  { id: 'time', model: 'Muse Spark', title: 'Recover true time', body: 'Cheap recorders lose frames but still claim 25 fps. Fewer frames look like less time, so the car looks faster. Muse Spark reads the burned-in clock, the vehicles’ own motion shows where frames went missing, and the range widens when it can’t tell.' },
+  { id: 'ground', model: 'Engine', title: 'Turn pixels into metres', body: 'A camera sees the road at an angle, so a pixel far away covers more road than one nearby. A few clicks on road markings fit the ground plane, and tracks become real paths you could lay a tape measure along.' },
   { id: 'speed', model: 'Engine', title: 'Measure, with honest doubt', body: 'A Kalman smoother gives speed. Monte Carlo runs over every uncertain input give a 90% interval, so no speed is ever shown bare.' },
-  { id: 'verdict', model: 'Muse Wonder + Engine', title: 'Hold the statement to it', body: 'Muse Wonder extracts each checkable claim, in Hindi or English. The engine, not the model, decides whether the footage agrees.' },
+  { id: 'verdict', model: 'Muse Wonder + Engine', title: 'Hold the statement to it', body: 'People ask whether a statement holds up, not just how fast. Muse Wonder extracts each checkable claim, in Hindi or English. The engine, not the model, decides whether the footage agrees, and says “can’t tell” when it can’t settle it.' },
 ];
 
-interface RealFrame {
-  width: number;
-  height: number;
-  crop_top: number;
-  crop_bottom: number;
-  masks: { id: string; box: [number, number, number, number]; rle?: Parameters<typeof drawRleMask>[1]; contact_px?: [number, number] | null }[];
-  claim: { quote: string; value_number: number; verdict: string; measured: { kmh: number; lo90: number; hi90: number }; subject_track: string };
-}
-
-const REAL_FRAME_URL = '/overview/real_frame.jpg';
 const MESH_FADE = 'linear-gradient(to bottom, #000 55%, transparent 100%)';
-
-/** A real traffic camera frame with the masks SAM 3.1 returned for it. */
-const RealFrameExhibit: React.FC<{ frame: RealFrame }> = ({ frame }) => {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const shown = frame.height - frame.crop_top - frame.crop_bottom;
-  useEffect(() => {
-    const c = canvas.current;
-    const ctx = c?.getContext('2d');
-    if (!c || !ctx) return;
-    c.width = frame.width;
-    c.height = frame.height;
-    for (const m of frame.masks) {
-      const colour = getTrackColor(m.id);
-      if (m.rle) drawRleMask(ctx, m.rle, m.box, colour, 1, 1);
-      ctx.strokeStyle = colour;
-      ctx.strokeRect(m.box[0], m.box[1], m.box[2] - m.box[0], m.box[3] - m.box[1]);
-    }
-  }, [frame]);
-  return (
-    <div className="relative overflow-hidden" style={{ aspectRatio: `${frame.width} / ${shown}` }}>
-      <img src={REAL_FRAME_URL} alt="A real traffic camera frame of a London junction, with two vehicles masked" className="absolute inset-0 h-full w-full object-cover" />
-      <canvas ref={canvas} className="absolute inset-x-0 w-full" aria-hidden="true"
-              style={{ top: `${(-frame.crop_top / shown) * 100}%`, height: `${(frame.height / shown) * 100}%` }} />
-    </div>
-  );
-};
 
 /** Small label above a section. Words only: the page reads in order without numbering. */
 const Eyebrow: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -83,41 +55,27 @@ const Eyebrow: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 const TRUE_SPEED_KMH = 50;
 
 /** The arithmetic of a lost frame: a worked example, so anyone can try it. */
-const ClockCard: React.FC = () => {
+const LostFrames: React.FC = () => {
   const [lostPct, setLostPct] = useState(20);
   const naive = TRUE_SPEED_KMH / (1 - lostPct / 100);
   return (
-    <article data-reveal className="why-card flex flex-col overflow-hidden rounded-lg border border-line bg-asphalt-900 transition-colors duration-300 hover:border-paint/40">
-      <div className="p-5 pb-4 sm:p-6 sm:pb-4">
-        <div className="text-[12px] uppercase tracking-[0.12em] text-signal-amber">Time</div>
-        <h3 className="mt-2 font-serif text-[23px] font-light leading-tight text-bone">The clock can be wrong</h3>
-        <p className="mt-2 text-[14px] leading-relaxed text-bone-300">
-          Cheap recorders lose frames but still claim 25 fps. Fewer frames look like less time, so the car looks faster. Sakshi looks for where the frames went, and widens its range when it can’t tell.
-        </p>
-      </div>
-      <div className="mt-auto border-t border-line bg-asphalt-950/50 p-5 sm:p-6">
-        <div className="flex h-9 gap-[3px]" aria-hidden="true">
-          {Array.from({ length: 40 }, (_, i) => (
-            <span key={i} className={`min-w-0 flex-1 rounded-[1px] transition-colors duration-200 ${(i * 37) % 100 < lostPct ? 'bg-signal-red/25' : 'bg-bone-400'}`} />
-          ))}
+    <div className="mt-4 border-t border-line pt-4">
+      <label className="block text-[13px] text-bone-300">
+        <span className="flex justify-between"><span>Try it: frames lost</span><span className="measured text-signal-amber">{lostPct}%</span></span>
+        <input type="range" min={0} max={30} step={5} value={lostPct} onChange={(e) => setLostPct(Number(e.target.value))} className="mt-2 w-full cursor-pointer accent-[#f2c037]" />
+      </label>
+      <dl className="mt-2 grid grid-cols-2 gap-4">
+        <div>
+          <dt className="text-[12px] text-bone-400">Real speed</dt>
+          <dd className="measured mt-0.5 text-[20px] text-bone">{TRUE_SPEED_KMH} <span className="text-[12px] text-bone-500">km/h</span></dd>
         </div>
-        <label className="mt-4 block text-[13px] text-bone-300">
-          <span className="flex justify-between"><span>Frames lost</span><span className="measured text-signal-amber">{lostPct}%</span></span>
-          <input type="range" min={0} max={30} step={5} value={lostPct} onChange={(e) => setLostPct(Number(e.target.value))} className="mt-2 w-full cursor-pointer accent-[#f2c037]" />
-        </label>
-        <dl className="mt-4 grid grid-cols-2 gap-3">
-          <div>
-            <dt className="text-[12px] text-bone-400">Real speed</dt>
-            <dd className="measured mt-0.5 text-[24px] text-bone">{TRUE_SPEED_KMH} <span className="text-[13px] text-bone-500">km/h</span></dd>
-          </div>
-          <div>
-            <dt className="text-[12px] text-bone-400">Simple sum says</dt>
-            <dd className={`measured mt-0.5 text-[24px] ${lostPct ? 'text-signal-amber' : 'text-bone'}`}>{naive.toFixed(1)} <span className="text-[13px] text-bone-500">km/h</span></dd>
-          </div>
-        </dl>
-        <p className="mt-3 text-[12px] text-bone-500">A worked example of the arithmetic, not a measurement.</p>
-      </div>
-    </article>
+        <div>
+          <dt className="text-[12px] text-bone-400">Simple sum says</dt>
+          <dd className={`measured mt-0.5 text-[20px] ${lostPct ? 'text-signal-amber' : 'text-bone'}`}>{naive.toFixed(1)} <span className="text-[12px] text-bone-500">km/h</span></dd>
+        </div>
+      </dl>
+      <p className="mt-2 text-[12px] text-bone-500">A worked example of the arithmetic, not a measurement.</p>
+    </div>
   );
 };
 
@@ -135,7 +93,7 @@ const invert3 = (H: number[][]): number[][] | null => {
 const RULER_STEP_M = 5;
 
 /** Equal steps on the road, drawn where they really fall in the image. */
-const RulerCard: React.FC<{ data: CaseData }> = ({ data }) => {
+const RulerFrame: React.FC<{ data: CaseData }> = ({ data }) => {
   const dots = useMemo(() => {
     const inv = invert3(data.calibration.H);
     if (!inv) return [];
@@ -158,56 +116,14 @@ const RulerCard: React.FC<{ data: CaseData }> = ({ data }) => {
     return paths.reduce((best, p) => (p.length > best.length ? p : best), [] as { u: number; v: number }[]);
   }, [data]);
   return (
-    <article data-reveal className="why-card flex flex-col overflow-hidden rounded-lg border border-line bg-asphalt-900 transition-colors duration-300 hover:border-paint/40">
-      <div className="p-5 pb-4 sm:p-6 sm:pb-4">
-        <div className="text-[12px] uppercase tracking-[0.12em] text-paint">Distance</div>
-        <h3 className="mt-2 font-serif text-[23px] font-light leading-tight text-bone">The ruler changes size</h3>
-        <p className="mt-2 text-[14px] leading-relaxed text-bone-300">
-          A camera sees the road at an angle, so a pixel far away covers more road than one nearby. Sakshi maps the picture onto the road first, then measures.
-        </p>
-      </div>
-      <div className="relative mt-auto border-t border-line">
-        <img src={scenarioThumbUrl(STORY_CASE)} alt="The simulated junction, with points marked at equal distances along a vehicle's path" className="block w-full" />
-        <svg viewBox={`0 0 ${data.clip.width} ${data.clip.height}`} className="absolute inset-0 h-full w-full" aria-hidden="true">
-          {dots.map((d, i) => (
-            <circle key={i} className="ruler-dot" cx={d.u} cy={d.v} r={data.clip.width / 90} fill="#f2c037" stroke="#0a0b0c" strokeWidth={data.clip.width / 400} />
-          ))}
-        </svg>
-        <p className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-asphalt-950 to-transparent px-4 pb-3 pt-10 text-[12.5px] text-bone-200">
-          Each dot is {RULER_STEP_M} m further along the measured path. Same distance, very different pixels.
-        </p>
-      </div>
-    </article>
-  );
-};
-
-/** A number alone versus an answer to the question being asked, from the real case. */
-const AnswerCard: React.FC<{ data: CaseData }> = ({ data }) => {
-  const claim = strongestContradiction(data);
-  const m = claim?.measured;
-  return (
-    <article data-reveal className="why-card flex flex-col overflow-hidden rounded-lg border border-line bg-asphalt-900 transition-colors duration-300 hover:border-paint/40">
-      <div className="p-5 pb-4 sm:p-6 sm:pb-4">
-        <div className="text-[12px] uppercase tracking-[0.12em] text-signal-green">The question</div>
-        <h3 className="mt-2 font-serif text-[23px] font-light leading-tight text-bone">A speed isn’t the answer</h3>
-        <p className="mt-2 text-[14px] leading-relaxed text-bone-300">
-          People ask whether a statement holds up. Sakshi states how sure the measurement is, checks the claim against it, and says “can’t tell” when the footage can’t settle it.
-        </p>
-      </div>
-      {claim && m && (
-        <div className="mt-auto border-t border-line bg-asphalt-950/50 p-5 sm:p-6">
-          <div className="text-[12px] text-bone-400">A simple sum stops here</div>
-          <div className="measured mt-1 text-[32px] leading-none text-bone-300">{m.kmh.toFixed(0)} <span className="text-[14px] text-bone-500">km/h</span></div>
-          <div className="my-4 h-px bg-line" />
-          <div className="flex items-start justify-between gap-3">
-            <div className="text-[12px] text-bone-400">Sakshi goes on</div>
-            <VerdictTag verdict={claim.verdict} />
-          </div>
-          <blockquote className="said mt-2 text-[17px] leading-snug">“{claim.quote}”</blockquote>
-          <ClaimLine className="mt-3" claimed={claim.value_number!} kmh={m.kmh} lo={m.lo90} hi={m.hi90} verdict={claim.verdict} />
-        </div>
-      )}
-    </article>
+    <div className="relative">
+      <img src={scenarioThumbUrl(STORY_CASE)} alt="The simulated junction, with points marked at equal distances along a vehicle's path" className="block w-full" />
+      <svg viewBox={`0 0 ${data.clip.width} ${data.clip.height}`} className="absolute inset-0 h-full w-full" aria-hidden="true">
+        {dots.map((d, i) => (
+          <circle key={i} className="ruler-dot" cx={d.u} cy={d.v} r={data.clip.width / 90} fill="#f2c037" stroke="#0a0b0c" strokeWidth={data.clip.width / 400} />
+        ))}
+      </svg>
+    </div>
   );
 };
 
@@ -252,7 +168,7 @@ const TimeExhibit: React.FC<{ data: CaseData }> = ({ data }) => {
   return (
     <div className="p-5">
       <div className="eyebrow">{data.clip.frames} frames, as the recorder kept them</div>
-      <div className="mt-3 flex h-16 gap-px">
+      <div className="mt-3 flex h-10 gap-px">
         {data.clock.frames.map((f) => {
           const gap = gaps.some((g) => g.i === f.i);
           return <span key={f.i} className={`time-tick min-w-0 flex-1 origin-bottom ${gap ? 'bg-signal-amber' : 'bg-asphalt-600'}`} />;
@@ -261,13 +177,14 @@ const TimeExhibit: React.FC<{ data: CaseData }> = ({ data }) => {
       <dl className="mt-4 grid grid-cols-2 gap-4">
         <div>
           <dt className="text-[13px] text-bone-400">Frames recovered</dt>
-          <dd className="measured mt-0.5 text-[26px] text-signal-amber">{data.clock.dropped_frames_inferred ?? lost}</dd>
+          <dd className="measured mt-0.5 text-[22px] text-signal-amber">{data.clock.dropped_frames_inferred ?? lost}</dd>
         </div>
         <div>
           <dt className="text-[13px] text-bone-400">Typical timing error</dt>
-          <dd className="measured mt-0.5 text-[26px] text-bone">±{(data.clock.median_sigma_s * 1000).toFixed(0)} ms</dd>
+          <dd className="measured mt-0.5 text-[22px] text-bone">±{(data.clock.median_sigma_s * 1000).toFixed(0)} ms</dd>
         </div>
       </dl>
+      <LostFrames />
     </div>
   );
 };
@@ -289,7 +206,7 @@ const GroundExhibit: React.FC<{ data: CaseData }> = ({ data }) => {
     <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" role="img" aria-label="Measured paths of both vehicles on the road plane">
       <defs>
         <pattern id="story-grid" width={f.k * 5} height={f.k * 5} patternUnits="userSpaceOnUse">
-          <path d={`M ${f.k * 5} 0 L 0 0 0 ${f.k * 5}`} fill="none" stroke="rgba(237,234,227,0.07)" />
+          <path d={`M ${f.k * 5} 0 L 0 0 0 ${f.k * 5}`} fill="none" stroke="rgba(237,234,227,0.18)" />
         </pattern>
       </defs>
       <rect width={W} height={H} fill="url(#story-grid)" />
@@ -342,6 +259,11 @@ const VerdictExhibit: React.FC<{ data: CaseData; active: boolean }> = ({ data, a
   const m = claim.measured;
   return (
     <div className="p-5 sm:p-7">
+      <div className="mb-4 border-b border-line pb-4">
+        <div className="text-[12px] text-bone-400">A simple sum stops here</div>
+        <div className="measured mt-1 text-[28px] leading-none text-bone-300">{m.kmh.toFixed(0)} <span className="text-[13px] text-bone-500">km/h</span></div>
+      </div>
+      <div className="mb-2 text-[12px] text-bone-400">Sakshi goes on</div>
       <VerdictTag verdict={claim.verdict} />
       <blockquote className="said mt-3 text-[24px] leading-snug">“{claim.quote}”</blockquote>
       <ClaimLine large className="mt-6" claimed={claim.value_number} kmh={m.kmh} lo={m.lo90} hi={m.hi90} verdict={claim.verdict} replayKey={active} />
@@ -352,65 +274,47 @@ const VerdictExhibit: React.FC<{ data: CaseData; active: boolean }> = ({ data, a
 export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: ActiveView) => void }> = ({ onOpenCase, onNavigate }) => {
   const [data, setData] = useState<CaseData | null>(null);
   const [bench, setBench] = useState<Benchmark | null>(null);
-  const [realFrame, setRealFrame] = useState<RealFrame | null>(null);
   const [step, setStep] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const hero = useRef<HTMLDivElement>(null);
   const steps = useRef<HTMLDivElement>(null);
-  const why = useRef<HTMLElement>(null);
-  const close = useRef<HTMLElement>(null);
+  const why = useRef<HTMLDivElement>(null);
+  const [replay, setReplay] = useState<CaseData | null>(null);
 
   useEffect(() => {
     loadScenarioCase(STORY_CASE).then(setData).catch(() => setData(null));
     loadBenchmark().then(setBench);
-    fetch('/overview/real_case.json').then((r) => (r.ok ? r.json() : null)).then(setRealFrame).catch(() => setRealFrame(null));
+    fetch(REPLAY_CASE_URL).then((r) => (r.ok ? r.json() : null)).then(setReplay).catch(() => setReplay(null));
   }, []);
 
   const sum = useMemo(() => (bench ? summarise(bench) : null), [bench]);
+  const heroClaim = useMemo(() => (replay ? strongestContradiction(replay) : null), [replay]);
 
-  // The opening: what was said, then what was measured, then the gap.
+  // The opening: the road draws itself, the words rise, then the replay comes up out of the light.
   useGSAP(
     () => {
       if (!data) return;
       const mm = gsap.matchMedia();
       mm.add('(prefers-reduced-motion: no-preference)', () => {
-        const split = new SplitText('.hero-title', { type: 'lines,words', mask: 'lines' });
+        const split = new SplitText('.hero-line', { type: 'lines,words', mask: 'lines' });
         const tl = gsap.timeline({ onComplete: () => split.revert() });
-        tl.from('.hero-road path', { drawSVG: '50% 50%', duration: 1.6, stagger: 0.05, ease: 'power2.inOut' })
+        tl.from('.hero-logo', { autoAlpha: 0, scale: 0.9, duration: 0.9 }, 0)
+          .from('.hero-road path', { drawSVG: '50% 50%', duration: 1.6, stagger: 0.05, ease: 'power2.inOut' }, 0)
           .from(split.lines, { yPercent: 105, duration: 0.9, stagger: 0.09, ease: 'power4.out' }, 0.1)
-          .from('.hero-sub > *', { autoAlpha: 0, y: 12, duration: 0.6, stagger: 0.08 }, '-=0.45')
-          .from('.hero-frame', { autoAlpha: 0, duration: 0.8, ease: 'none' }, '-=0.7')
-          .from('.hero-quote', { autoAlpha: 0, y: 10, duration: 0.5 }, '-=0.35')
-          .from('.hero-corner', { autoAlpha: 0, scale: 1.5, duration: 0.5, stagger: 0.05, transformOrigin: 'center' }, '-=0.5');
-        // A scan passes over the frame, as if the footage is being read.
-        gsap.fromTo('.hero-scan', { yPercent: -100 }, { yPercent: 1100, duration: 4.5, ease: 'none', repeat: -1, repeatDelay: 1.5 });
-        gsap.to('.hero-figure', {
-          y: -36, ease: 'none',
-          scrollTrigger: { trigger: hero.current, start: 'top top', end: 'bottom top', scrub: 0.6 },
-        });
+          .from('.hero-replay', { autoAlpha: 0, y: 34, scale: 0.97, duration: 1.1 }, 0.45)
+          .from('.hero-sub > *', { autoAlpha: 0, y: 12, duration: 0.6, stagger: 0.08 }, 0.8);
         // Scrolling drives down the road: it slides, widens and dims together.
         gsap.to('.hero-road', {
           yPercent: 14, scale: 1.14, opacity: 0.04, transformOrigin: '50% 0%', ease: 'none',
           scrollTrigger: { trigger: hero.current, start: 'top top', end: 'bottom 20%', scrub: 0.8 },
         });
-        // The glow follows the pointer.
-        const box0 = hero.current?.getBoundingClientRect();
-        if (box0) gsap.set('.hero-glow', { x: box0.width * 0.72, y: box0.height * 0.42 });
-        const glowX = gsap.quickTo('.hero-glow', 'x', { duration: 1.1, ease: 'power3' });
-        const glowY = gsap.quickTo('.hero-glow', 'y', { duration: 1.1, ease: 'power3' });
-        const onMove = (e: PointerEvent) => {
-          const box = hero.current?.getBoundingClientRect();
-          if (box) { glowX(e.clientX - box.left); glowY(e.clientY - box.top); }
-        };
-        const el = hero.current;
-        el?.addEventListener('pointermove', onMove);
-        return () => { el?.removeEventListener('pointermove', onMove); split.revert(); };
+        return () => split.revert();
       });
     },
     { scope: hero, dependencies: [Boolean(data)] },
   );
 
-  // The equation lights up as you reach it, then the real ruler points appear.
+  // The equation lights up as you reach it.
   useGSAP(
     () => {
       if (!data) return;
@@ -419,29 +323,10 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
           .fromTo('.eq-time', { color: '#99978f' }, { color: '#f0a63a', ease: 'none' })
           .fromTo('.eq-distance', { color: '#99978f' }, { color: '#f2c037', ease: 'none' }, 0)
           .fromTo('.eq-rule', { scaleX: 0 }, { scaleX: 1, ease: 'none', transformOrigin: 'left center' }, 0);
-        gsap.from('.ruler-dot', {
-          scale: 0, transformOrigin: 'center', duration: 0.4, stagger: 0.09, ease: 'back.out(2.5)',
-          scrollTrigger: { trigger: '.ruler-dot', start: 'top 85%', once: true },
-        });
       });
       ScrollTrigger.refresh();
     },
     { scope: why, dependencies: [Boolean(data)] },
-  );
-
-  // The measured paths draw themselves as the page closes.
-  useGSAP(
-    () => {
-      if (!data) return;
-      withMotion(() => {
-        gsap.from('.close-path', {
-          drawSVG: '0%', ease: 'none', stagger: 0.1,
-          scrollTrigger: { trigger: close.current, start: 'top 90%', end: 'top 25%', scrub: 0.6 },
-        });
-      });
-      ScrollTrigger.refresh();
-    },
-    { scope: close, dependencies: [Boolean(data)] },
   );
 
   // The story: the exhibit stays put while the steps scroll past it.
@@ -475,6 +360,7 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
         gsap.from(layer, { autoAlpha: 0, duration: 0.4, ease: 'none' });
         if (step === 1) gsap.from('.time-tick', { scaleY: 0, duration: 0.5, stagger: { amount: 0.5 } });
         if (step === 2) {
+          gsap.from('.ruler-dot', { scale: 0, transformOrigin: 'center', duration: 0.4, stagger: 0.07, ease: 'back.out(2.5)' });
           gsap.from('.ground-path', { drawSVG: '0%', duration: 1.1, ease: 'power2.inOut', stagger: 0.1 });
           gsap.from('.ground-impact', { scale: 0, transformOrigin: 'center', duration: 0.4, delay: 1, ease: 'back.out(2)' });
         }
@@ -519,56 +405,68 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
             {[60, 130, 215, 320, 445, 590].map((y) => <path key={y} d={`M0 ${y} H1200`} stroke="#edeae3" strokeWidth={0.5} opacity={y / 900} />)}
           </svg>
           <div className="absolute inset-x-0 top-0 h-[30%] bg-gradient-to-b from-asphalt-950 to-transparent" />
-          <div className="hero-glow absolute left-0 top-0 -ml-[260px] -mt-[260px] h-[520px] w-[520px] rounded-full bg-paint/[0.09] blur-[90px]" />
         </div>
-        <div className="relative mx-auto grid max-w-[1320px] items-center gap-10 px-4 py-14 sm:px-6 lg:min-h-[calc(100dvh-53px)] lg:grid-cols-[minmax(0,1.14fr)_minmax(0,1fr)] lg:gap-14 lg:py-12">
-          <div>
-            <h1 className="hero-title display text-[clamp(44px,5.7vw,80px)]">
-              People remember.<br /><span className="text-paint">Physics measures.</span>
-            </h1>
-            <div className="hero-sub">
-              <p className="mt-6 max-w-[34rem] text-[17px] leading-relaxed text-bone-200">
-                Sakshi (<span lang="hi">साक्षी</span>, “witness”) turns ordinary road footage into metres and seconds, then checks what
-                each person said against them, with honest 90% intervals.
-              </p>
-              <div className="mt-7 flex flex-wrap items-center gap-2.5">
-                <Button variant="primary" className="h-10 px-4 text-[14px]" icon={<ArrowRight className="h-4 w-4" />} onClick={onOpenCase}>
-                  Open a case
-                </Button>
-                <Button variant="secondary" className="h-10 px-4 text-[14px]" onClick={() => onNavigate('system')}>How it’s built</Button>
-              </div>
-              <p className="mt-4 text-[13px] text-bone-400">Meta’s SAM 3.1 and Muse models read the footage; the physics engine does the measuring. Sakshi reports for expert review and never states who is at fault.</p>
-            </div>
+        <div className="relative mx-auto max-w-[1320px] px-4 pb-16 pt-10 text-center sm:px-6 lg:pt-12">
+          <h1 className="hero-title tracking-[-0.025em] text-bone">
+            <span className="sr-only">Sakshi. </span>
+            <span className="hero-logo flex justify-center drop-shadow-[0_0_34px_rgba(242,192,55,0.45)]" aria-hidden="true"><Mark className="h-[clamp(84px,10vw,140px)] w-[clamp(84px,10vw,140px)]" /></span>
+            <span className="hero-line mt-5 block text-[clamp(32px,4vw,54px)] font-semibold leading-[1.1]">People remember.</span>
+            <span className="hero-line mt-4 block font-serif text-[clamp(32px,4vw,54px)] font-light italic leading-[1.1] text-paint">Physics measures.</span>
+          </h1>
+
+          <div className="hero-replay relative mt-10 text-left sm:mt-12">
+            {replay ? <HeroReplay data={replay} videoUrl={REPLAY_VIDEO} source="Real traffic camera, London · no crash" restFrame={REPLAY_REST_FRAME} /> : <div className="aspect-video animate-pulse rounded-xl bg-asphalt-800" />}
           </div>
 
-          <figure className="hero-figure relative overflow-hidden rounded-lg border border-line-strong bg-asphalt-900 shadow-[0_30px_90px_-30px_rgba(242,192,55,0.28)]">
-            <div className="hero-frame relative overflow-hidden">
-              {realFrame ? <RealFrameExhibit frame={realFrame} /> : <div className="aspect-video animate-pulse bg-asphalt-800" />}
-              <div className="hero-scan pointer-events-none absolute inset-x-0 top-0 h-[10%] bg-gradient-to-b from-transparent via-paint/20 to-paint/40" aria-hidden="true" />
-              {['left-2 top-2 border-l border-t', 'right-2 top-2 border-r border-t', 'bottom-2 left-2 border-b border-l', 'bottom-2 right-2 border-b border-r'].map((c) => (
-                <span key={c} className={`hero-corner pointer-events-none absolute h-4 w-4 border-paint ${c}`} aria-hidden="true" />
-              ))}
+          <div className="hero-sub relative mt-8">
+            {heroClaim && heroClaim.value_number != null && heroClaim.measured && (
+              <div className="mx-auto max-w-3xl rounded-lg border border-line bg-asphalt-900 p-4 text-left sm:p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <blockquote className="said text-[18px] leading-snug sm:text-[20px]">“{heroClaim.quote}”</blockquote>
+                  <VerdictTag verdict={heroClaim.verdict} className="mt-1" />
+                </div>
+                <ClaimLine className="mt-3" large claimed={heroClaim.value_number} kmh={heroClaim.measured.kmh} lo={heroClaim.measured.lo90} hi={heroClaim.measured.hi90} verdict={heroClaim.verdict} />
+                <p className="mt-2 text-[12px] leading-relaxed text-bone-500">
+                  Silver van (car-15), km/h. A real traffic camera in London, scaled from satellite map points. No crash here, and the statement was written for this demo. Powered by TfL Open Data.
+                </p>
+              </div>
+            )}
+            <p className="mx-auto mt-7 max-w-[38rem] text-[17px] leading-relaxed text-bone-200">
+              Sakshi (<span lang="hi">साक्षी</span>, “witness”) turns ordinary road footage into metres and seconds, then checks what each person said against them, with honest 90% intervals.
+            </p>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
+              <Button variant="primary" className="h-10 px-4 text-[14px]" icon={<ArrowRight className="h-4 w-4" />} onClick={onOpenCase}>
+                Open a case
+              </Button>
+              {DEMO_VIDEO_ID && (
+                <Button variant="secondary" className="h-10 px-4 text-[14px]" icon={<Play className="h-3.5 w-3.5 fill-current" />}
+                        onClick={() => document.getElementById('demo')?.scrollIntoView({ behavior: 'smooth' })}>
+                  Watch the demo
+                </Button>
+              )}
+              <Button variant="secondary" className="h-10 px-4 text-[14px]" onClick={() => onNavigate('system')}>How it’s built</Button>
             </div>
-            <figcaption className="hero-quote border-t border-line p-4 sm:p-5">
-              {realFrame ? (
-                <>
-                  <div className="flex items-start justify-between gap-3">
-                    <blockquote className="said text-[18px] leading-snug sm:text-[20px]">“{realFrame.claim.quote}”</blockquote>
-                    <VerdictTag verdict={realFrame.claim.verdict as Claim['verdict']} className="mt-1" />
-                  </div>
-                  <ClaimLine className="mt-3" large claimed={realFrame.claim.value_number} kmh={realFrame.claim.measured.kmh} lo={realFrame.claim.measured.lo90} hi={realFrame.claim.measured.hi90} verdict={realFrame.claim.verdict as Claim['verdict']} />
-                  <p className="mt-2 text-[12px] leading-relaxed text-bone-500">
-                    White car, km/h. A real traffic camera in London with real SAM 3.1 masks. No crash here, and the statement was written for this demo.
-                  </p>
-                </>
-              ) : <div className="h-36 animate-pulse rounded bg-asphalt-800" />}
-            </figcaption>
-          </figure>
+            <p className="mt-4 text-[13px] text-bone-400">Meta’s SAM 3.1 and Muse models read the footage; the physics engine does the measuring. Sakshi reports for expert review and never states who is at fault.</p>
+          </div>
         </div>
       </section>
 
+      {/* The demo */}
+      {DEMO_VIDEO_ID && (
+        <section id="demo" className="section-glow scroll-mt-16 border-b border-line">
+          <div className="mx-auto max-w-[1040px] px-4 py-20 sm:px-6">
+            <Eyebrow>The demo</Eyebrow>
+            <h2 data-reveal className="h-section max-w-3xl">See it work on a crash, start to finish.</h2>
+            <div data-reveal className="mt-8 aspect-video overflow-hidden rounded-lg border border-line-strong bg-asphalt-900">
+              <iframe className="h-full w-full" loading="lazy" title="Sakshi demo video" allowFullScreen
+                      src={`https://www.youtube-nocookie.com/embed/${DEMO_VIDEO_ID}`} />
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* The problem */}
-      <section className="relative z-10 border-b border-line">
+      <section className="section-glow relative z-10 border-b border-line">
         <div className="mx-auto max-w-page px-4 py-20 sm:px-6">
           <div className="grid gap-10 lg:grid-cols-[1fr_1.1fr] lg:gap-14">
             <div>
@@ -604,41 +502,23 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
         </div>
       </section>
 
-      {/* The honest question */}
-      <section ref={why} className="relative overflow-hidden border-b border-line bg-asphalt-950">
-        <div className="mx-auto max-w-page px-4 py-24 sm:px-6">
-          <Eyebrow>A fair question</Eyebrow>
+      {/* The method, opened by the question everyone asks */}
+      <section className="section-glow border-b border-line">
+        <div ref={why} className="mx-auto max-w-page px-4 pt-20 sm:px-6">
+          <Eyebrow>The method</Eyebrow>
           <h2 data-reveal className="h-section max-w-3xl">Couldn’t you just divide distance by time?</h2>
           <p data-reveal className="prose-muted mt-4 max-w-2xl text-[16px]">
             You could, and a skilled analyst can. Sakshi does the same arithmetic. The hard part is whether cheap footage can be trusted for that distance and that time, and what the result says about what someone claimed.
           </p>
-          <div className="why-equation mt-10 font-serif text-[clamp(28px,5vw,56px)] font-light leading-tight text-bone" aria-label="Speed equals distance divided by time">
+          <div className="why-equation mt-8 font-serif text-[clamp(28px,5vw,56px)] font-light leading-tight text-bone" aria-label="Speed equals distance divided by time">
             speed = <span className="eq-distance">distance</span> ÷ <span className="eq-time">time</span>
             <div className="eq-rule mt-3 h-px w-full max-w-2xl bg-gradient-to-r from-paint to-transparent" aria-hidden="true" />
           </div>
-          {data ? (
-            <div className="mt-10 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-              <ClockCard />
-              <RulerCard data={data} />
-              <AnswerCard data={data} />
-            </div>
-          ) : <div className="mt-10 h-96 animate-pulse rounded-lg bg-asphalt-850" />}
-          <p data-reveal className="mt-8 text-[15px] leading-relaxed text-bone-200">
-            Sakshi doesn’t replace an expert: it gives anyone with a clip a first answer that shows its working and its doubt.
-          </p>
+          <p data-reveal className="prose-muted mt-8 max-w-2xl text-[16px]">One real case, start to finish: a clip degraded to cheap CCTV, measured by the same pipeline you can open above.</p>
         </div>
-      </section>
-
-      {/* The method */}
-      <section className="border-b border-line">
-        <div className="mx-auto max-w-page px-4 pt-20 sm:px-6">
-          <Eyebrow>The method</Eyebrow>
-          <h2 data-reveal className="h-section max-w-3xl">From a noisy clip to a checkable answer.</h2>
-          <p data-reveal className="prose-muted mt-3 max-w-2xl text-[16px]">One real case, start to finish: a clip degraded to cheap CCTV, measured by the same pipeline you can open below.</p>
-        </div>
-        <div ref={steps} className="mx-auto mt-6 grid max-w-page gap-x-14 px-4 pb-16 sm:px-6 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)]">
+        <div ref={steps} className="mx-auto mt-6 grid max-w-page gap-x-14 px-4 pb-10 sm:px-6 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)]">
           {/* Exhibit: stays in view while the steps pass */}
-          <div className="sticky top-[96px] z-10 order-first self-start lg:order-last lg:top-[calc(50vh-190px)]">
+          <div className="sticky top-[96px] z-10 order-first self-start lg:order-last lg:top-[calc(50vh-220px)]">
             <div className="overflow-hidden rounded-lg border border-line-strong bg-asphalt-900 shadow-[0_24px_70px_-34px_rgba(242,192,55,0.3)]">
               <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-2">
                 <span className="eyebrow">{STEPS[step].model}</span>
@@ -651,7 +531,15 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
                   <div className={`exhibit-${STEPS[step].id}`}>
                     {step === 0 && <TrackExhibit data={data} />}
                     {step === 1 && <TimeExhibit data={data} />}
-                    {step === 2 && <GroundExhibit data={data} />}
+                    {step === 2 && (
+                      <>
+                        <div className="grid grid-cols-2 gap-px bg-line">
+                          <div className="bg-asphalt-900"><RulerFrame data={data} /></div>
+                          <div className="bg-asphalt-900"><GroundExhibit data={data} /></div>
+                        </div>
+                        <p className="border-t border-line px-3 py-2 text-[12.5px] text-bone-300">Each dot is {RULER_STEP_M} m further along the measured path. Same distance, very different pixels.</p>
+                      </>
+                    )}
                     {step === 3 && <SpeedExhibit data={data} />}
                     {step === 4 && <VerdictExhibit data={data} active={step === 4} />}
                   </div>
@@ -672,19 +560,24 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
             ))}
           </ol>
         </div>
+        <p data-reveal className="mx-auto max-w-page px-4 pb-16 text-[15px] leading-relaxed text-bone-200 sm:px-6">
+          Sakshi doesn’t replace an expert: it gives anyone with a clip a first answer that shows its working and its doubt.
+        </p>
       </section>
 
       {/* Models */}
-      <section className="border-b border-line">
+      <section className="section-glow border-b border-line">
         <div className="mx-auto max-w-page px-4 py-20 sm:px-6">
           <Eyebrow>The models</Eyebrow>
           <h2 data-reveal className="h-section max-w-3xl">Meta’s models see, read and listen. They never do the sums.</h2>
-          <div className="mt-8 divide-y divide-line border-y border-line">
+          <div className="hairline-grid mt-8 grid overflow-hidden rounded border border-line sm:grid-cols-2">
             {MODELS.map((model) => (
-              <div key={model.id} data-reveal className="grid gap-x-8 gap-y-1 border-l-2 border-transparent py-4 pl-3 transition-colors duration-300 hover:border-paint hover:bg-asphalt-900 sm:grid-cols-[110px_200px_1fr]">
-                <div className="eyebrow pt-1">{model.role}</div>
-                <div className="text-[15px] text-bone">{model.name}</div>
-                <div className="text-[14px] leading-relaxed text-bone-300">{model.enables}</div>
+              <div key={model.id} data-reveal className="bg-asphalt-900 p-5 transition-colors duration-300 hover:bg-asphalt-850 sm:[&:last-child:nth-child(odd)]:col-span-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div className="text-[15px] text-bone">{model.name}</div>
+                  <div className="eyebrow">{model.role}</div>
+                </div>
+                <div className="mt-1.5 text-[14px] leading-relaxed text-bone-300">{model.enables}</div>
               </div>
             ))}
           </div>
@@ -695,7 +588,7 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
       </section>
 
       {/* Proof */}
-      <section className="border-b border-line">
+      <section className="section-glow border-b border-line">
         <div className="mx-auto max-w-page px-4 py-20 sm:px-6">
           <Eyebrow>The evidence</Eyebrow>
           <h2 data-reveal className="h-section max-w-3xl">Tested where the true answer is known.</h2>
@@ -725,19 +618,8 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
       </section>
 
       {/* Close */}
-      <section ref={close} className="relative overflow-hidden">
-        <div className="relative mx-auto max-w-page px-4 py-28 text-center sm:px-6">
-          {data && (() => {
-            const W = 1200, H = 520, f = fitPath(data, W, H);
-            return (
-              <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className="pointer-events-none absolute inset-x-[6%] inset-y-10 h-[calc(100%-5rem)] w-[88%] opacity-25" aria-hidden="true">
-                {data.trajectories.map((t) => (
-                  <path key={t.track} className="close-path" fill="none" stroke={getTrackColor(t.track)} strokeWidth={2.5}
-                        d={t.x.map((x, i) => `${i ? 'L' : 'M'}${f.x(x).toFixed(1)} ${f.y(t.y[i]).toFixed(1)}`).join('')} />
-                ))}
-              </svg>
-            );
-          })()}
+      <section className="section-glow relative overflow-hidden">
+        <div className="relative mx-auto max-w-page px-4 py-24 text-center sm:px-6">
           <div data-reveal className="relative flex justify-center"><Mark className="h-8 w-8" /></div>
           <h2 data-reveal className="h-section relative mx-auto mt-5 max-w-2xl">Scrub through a crash, and test a claim yourself.</h2>
           <div data-reveal className="relative mt-7">
@@ -750,7 +632,7 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
               1. <a className="underline hover:text-bone" href="https://www.who.int/publications/i/item/9789240086517" target="_blank" rel="noreferrer">WHO, Global status report on road safety 2023</a>.{' '}
               2. <a className="underline hover:text-bone" href="https://morth.nic.in/sites/default/files/Road-Accident-in-India-2023-Publications.pdf" target="_blank" rel="noreferrer">MoRTH, Road Accidents in India 2023</a>.
             </p>
-            <p>Sakshi is a measurement tool. It does not determine fault or legal liability. Footage is simulator output unless labelled. The opening frame is from a London traffic camera, used to show the method: Powered by TfL Open Data. TfL does not endorse Sakshi.</p>
+            <p>Sakshi is a measurement tool. It does not determine fault or legal liability. Footage is simulator output unless labelled. The opening replay is from a London traffic camera, used to show the method: Powered by TfL Open Data. TfL does not endorse Sakshi.</p>
           </div>
         </footer>
       </section>
