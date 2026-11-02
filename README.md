@@ -32,9 +32,18 @@ kill $(lsof -t -iTCP:8000 -sTCP:LISTEN)             # if another program holds i
 git clone https://github.com/RaghavMaheshwari2024/Sakshi.git && cd Sakshi && docker build -t sakshi . && docker run --rm -p 8000:8000 sakshi
 ```
 
-Open **http://localhost:8000**. The first build takes a few minutes.
+The first build takes a few minutes. When the terminal shows `Application startup complete`, keep it running and open this in your browser:
 
-To use another port, change the first number, for example `-p 8080:8000`, and open **http://localhost:8080**. The same applies to the other `docker run` command below.
+**http://localhost:8000**
+
+**Only if port 8000 was busy:** use another port by changing the first number after `-p`, and open that same number in your browser. The second number stays 8000.
+
+| Command | Open in your browser |
+| --- | --- |
+| `docker run --rm -p 8000:8000 sakshi` | http://localhost:8000 |
+| `docker run --rm -p 8080:8000 sakshi` | http://localhost:8080 |
+
+The terminal always says `Uvicorn running on http://0.0.0.0:8000`, whichever port you chose. That is the port inside the container, so go by the table above. The same rule applies to the `docker run` command with your own key below.
 
 ### What to check without a key
 
