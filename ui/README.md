@@ -46,7 +46,7 @@ and says that it is a recording.
 python ui/scripts/export_benchmark.py     # from the repo root
 ```
 
-The clock comparison on the Validation view quotes the table in the root README.
+The clock comparison on the Validation view quotes the table in docs/validation.md.
 Update `ABLATION` in `src/components/AccuracyView.tsx` if that table changes.
 
 ## Design system

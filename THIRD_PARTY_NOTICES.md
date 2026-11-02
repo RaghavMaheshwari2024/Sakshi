@@ -16,3 +16,8 @@
   python-dotenv (BSD).
 
 - Leaflet (BSD-2-Clause): map on the calibration screen. Map tiles are fetched at run time from Esri World Imagery and OpenStreetMap (© OpenStreetMap contributors); place search uses Nominatim. Each provider's attribution and usage terms apply.
+
+- Transport for London JamCam footage (camera 06600): the replay clip in `ui/public/overview/`. Powered by TfL Open Data. TfL does not endorse Sakshi.
+- Figures cited on the Overview: WHO, Global status report on road safety 2023; MoRTH, Road Accidents in India 2023.
+- Interface libraries: React, React Three Fiber, Drei, Three.js, d3-scale, Tailwind CSS, Lucide, Zustand and Vite (each under its own open-source licence, see `ui/package.json`); GSAP under its own standard licence; IBM Plex fonts via Fontsource (SIL Open Font License).
+- FFmpeg: decodes and probes video in the backend and the Docker image, under its own licence.

@@ -163,7 +163,7 @@ const TruthChart: React.FC<{ rows: SeriesRow[]; impactT: number | null }> = ({ r
   );
 };
 
-// Documented in the repo README (scripts/ablate_clock.py on cases/synthetic: 12% of frames dropped plus a 5-frame burst).
+// Documented in docs/validation.md (scripts/ablate_clock.py on cases/synthetic: 12% of frames dropped plus a 5-frame burst).
 const ABLATION = [
   { method: 'Nominal frame rate', err: [12.8, 22.0], cover: [20, 22] },
   { method: 'Clock ticks only', err: [5.0, 8.6], cover: [68, 74] },

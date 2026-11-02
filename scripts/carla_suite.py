@@ -5,7 +5,7 @@
   python scripts/carla_suite.py --only base,near_miss  # run some
   python scripts/carla_suite.py --variants lowest      # skip the wheel-contact variant
 
-Needs the CARLA server running on Town10HD_Opt (see README). Each scenario is
+Needs the CARLA server running on Town10HD_Opt (see docs/carla.md). Each scenario is
 rendered once into cases/suite/<name>/, made CCTV-like, then run through the
 full pipeline once per contact variant ("lowest" mask pixel, "wheels") in
 cases/suite/<name>/<variant>/, and scored against ground truth. Footage
@@ -63,7 +63,7 @@ SCENARIOS: dict[str, tuple[str, list[str] | str, list[str]]] = {
                 ["--cam-side", "4", "--kind", "crowded"], []),
     # Re-rendered once: the first chain camera (11 m up, 15 m beyond the junction)
     # saw the three cars end-on 30-40 m away, hiding each other: impact MISSED
-    # (kept in the README as a known limit). This camera is 20 m above the junction.
+    # (kept in docs/validation.md as a known limit). This camera is 20 m above the junction.
     "chain": ("HELD-OUT: A runs into B at the red light and pushes it into C (two collisions)",
               ["--kind", "chain", "--cam-ahead", "0", "--cam-side", "3", "--cam-height", "20", "--look-at", "crash"], []),
     "low_res": ("base footage at 640x360, heavy compression", "from:base", ["--scale", "0.5", "--crf", "36"]),
@@ -222,7 +222,7 @@ def main():
             rows.append(row(name, "-", what, {}, status))
             failures += status in ("CARLA not reachable", "render failed (see log)")
             if failures >= 2:
-                print("\nCARLA seems down: restart it (see README troubleshooting), then rerun this command; "
+                print("\nCARLA seems down: restart it (see docs/carla.md), then rerun this command; "
                       "finished scenarios are skipped.")
                 break
             continue

@@ -88,7 +88,7 @@ def summarise(tracks: list[dict], n_frames: int) -> list[str]:
     if max_i >= n_frames:
         warnings.append(
             f"SAM reports frame {max_i} but the clip has {n_frames} frames when decoded "
-            "here: frame numbering differs. Re-encode the clip (see the README) and retry."
+            "here: frame numbering differs. Re-encode the clip and retry."
         )
     return lines + ([""] + [f"  ! {w}" for w in warnings] if warnings else ["", "  no warnings"])
 

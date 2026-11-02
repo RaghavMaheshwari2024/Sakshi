@@ -1,361 +1,124 @@
 # Sakshi
 
-Physics-checked crash reconstruction from any road video. Sakshi tracks every
-road user with **SAM 3.1**, turns pixels into metres and seconds with a
-deterministic geometry and physics engine, and checks each person's statement
-against the measurements, with honest 90% intervals.
+Physics-checked crash reconstruction from ordinary road video. Sakshi tracks every road user with
+**SAM 3.1**, turns pixels into metres and seconds with a deterministic physics engine, and checks what
+each person said against those measurements, with a 90% range on every speed.
 
-Sakshi reports measurements to support expert review. It never states who is at fault.
+It reports measurements to support expert review and never states who is at fault.
 
-## example env
+<!-- Demo video: add the link here -->
+
+## For judges: run it in one go
+
+You need [Docker](https://docs.docker.com/get-docker/). No API key or account is needed for this path.
+
 ```bash
-   MODEL_API_KEY=
-   SAKSHI_SAM_MODEL=sam-3.1
-   SAKSHI_SPARK_MODEL=muse-spark-1.3
-   SAKSHI_WONDER_MODEL=muse-wonder-1.0
-   SAKSHI_VOICE_MODEL=muse-voice-transcribe-1.0
-   SAKSHI_SAM_CONCEPTS=car,motorcycle,person,traffic light
-   SAKSHI_PRIVATE=0
-   GLIMMER_BASE_URL=http://localhost:8001/v1
-   GLIMMER_MODEL=meta-models/Muse-Glimmer-30B
+git clone https://github.com/RaghavMaheshwari2024/Sakshi.git && cd Sakshi && docker build -t sakshi . && docker run --rm -p 8000:8000 sakshi
 ```
 
-## Quick start
+Open **http://localhost:8000**. The first build takes a few minutes. If port 8000 is taken, use `-p 8080:8000` and open port 8080.
+
+### What to check without a key
+
+The 16 cases in the case switcher are clearly labelled **Recorded benchmark**: stored results from the
+real pipeline, shown so every feature can be checked with no credentials.
+
+| Screen | What to try |
+| --- | --- |
+| Overview | The live London replay, the method, and the evidence |
+| Investigate | Scrub a crash, then press **Show me** on a statement to jump to the moment it was judged |
+| Report | The written report for the open case |
+| Validation | Scores for every scenario, including what falls short |
+| System | The models and the pipeline |
+
+### Run the live pipeline with your own key
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env            # add MODEL_API_KEY
-python scripts/list_models.py   # confirm the model IDs your key can use
-python scripts/check_sam.py my_clip.mp4 --concepts car   # SAM 3.1 gate: watch my_clip_tracks.mp4
+cp .env.example .env              # then set MODEL_API_KEY to your Meta Model API key
+docker run --rm -p 8000:8000 --env-file .env sakshi
+```
 
-# Engine end to end on a synthetic crash with exact ground truth (no API calls):
+Choose **New case** and upload a clip. `ui/public/overview/replay.mp4` in this repo is a real London
+camera clip you can use. Then calibrate the road, add statements if you like, and run. Each run makes live model calls on your key.
+
+### Run it without Docker
+
+Needs Python 3.12, Node 22 and ffmpeg.
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+cp .env.example .env              # optional: set MODEL_API_KEY for live runs
+(cd ui && npm ci && npm run build)
+uvicorn api.app:app --port 8000
+```
+
+### Check the engine without a key
+
+From the same virtual environment, these run the engine on a synthetic crash with exact ground truth and run the tests:
+
+```bash
 python scripts/make_synthetic_case.py
 python scripts/run_case.py cases/synthetic --offline
 python scripts/eval_case.py cases/synthetic
-python scripts/ablate_clock.py cases/synthetic
 pytest -q
 ```
 
-`mock/case.json` (+ `mock/input.mp4`) is a complete output for building the UI
-before the real pipeline runs.
+## How Meta's models are used
 
-## How each Meta model is used
+The models read the scene. They never produce a number: every speed, distance and time comes from the engine.
 
-Language models never produce a number. Every speed, distance and time comes
-from the engine; the models read, reason and explain around those numbers.
-
-| Model | File | Job |
-| --- | --- | --- |
-| SAM 3.1 (Meta Model API) | `sakshi/meta/sam.py` | Tracks every car, motorcycle, person and traffic light with persistent ids and pixel masks. One request per concept, streamed and decoded with Meta's `meta-sam-parser`. The mask's lowest band gives the tyre-road contact point. |
-| Muse Spark | `sakshi/meta/spark.py` | Reads the burned-in CCTV clock at the frames where it changes (true frame times), and reads a traffic light when the colour rule is unsure. Structured JSON output. |
-| Muse Wonder | `sakshi/meta/wonder.py` | Looks at keyframes with every track labelled and describes each road user; suggests which statement-giver drove which track; extracts checkable claims (Hindi or English); writes the report. A validator rejects any number not produced by the engine. |
-| Muse Voice Transcribe | `sakshi/meta/voice.py` | Transcribes recorded statements (one-shot endpoint, Hindi/English bias). |
-| Muse Glimmer (open weights) | `sakshi/meta/client.py` | Private mode (`SAKSHI_PRIVATE=1`): claim extraction and report writing run on our own GPU via any OpenAI-compatible server (`vllm serve meta-models/Muse-Glimmer-30B`). |
-| Muse Code | — | Development only. |
-
-Every call is cached (`cache/`) and logged (`logs/model_usage.jsonl`);
-`python scripts/usage_report.py` prints the per-model table for the deck.
-
-## The engine (`sakshi/engine/`)
-
-1. `homography.py`: image to road plane from 4+ clicked point pairs, with reprojection error.
-2. `clock.py`: true frame times. **Drop-aware**: clock ticks fix how many sensor
-   frames each second held; the vehicles' own motion shows where frames were lost.
-3. `kalman.py`: constant-acceleration Kalman filter + RTS smoother on the ground plane.
-4. `uncertainty.py`: Monte Carlo over clicks, ground distances, contact offset,
-   mask jitter, frame times (correlated, per clock method) and smoother stiffness → 90% intervals.
-5. `events.py`: impact, braking onset, stop-line crossing, momentum check at the impact time.
-6. `signals.py`: lit-lamp colour per frame, debounced into a signal timeline.
-7. `claims.py`: each claim → consistent / inconsistent / can't tell, with the measurement.
-
-## Current results (synthetic case, 12% of frames dropped + a 5-frame burst)
-
-| Clock method | Speed error, last 2 s before impact | True speed inside 90% interval |
-| --- | --- | --- |
-| Nominal frame rate | 12.8–22.0% | 20–22% |
-| Clock ticks only | 5.0–8.6% | 68–74% |
-| **Drop-aware (ticks + motion)** | **1.6–2.1%** | **87–100%** |
-
-Impact time within 0.08 s; signal changes exact; 3/3 claim verdicts correct;
-momentum check consistent (residual 0.01). The colliding vehicles are smoothed
-separately before and after contact, so post-impact deceleration does not leak
-into the pre-impact speed.
-
-Known limits:
-- At 25% frame drops the error is about 6% and the intervals are too narrow (45–55% coverage).
-- The road is treated as flat (one homography). Slopes and the gap between the
-  lowest mask pixel and the true tyre line are carried as uncertainty, not corrected.
-- With several traffic lights in view, the user must pick the one that governs
-  the stop line (`calibration.signal_track`); otherwise signal claims are "can't tell".
-
-These are synthetic numbers. The pitch must quote CARLA (`sim/`) and real-camera results.
-
-### CARLA test suite, fixed camera (Oct 31)
-
-16 scenarios, all with live SAM 3.1, Muse Spark and Muse Wonder (Town10HD_Opt,
-960x540, CRF 32, 12% of frames dropped + 3% duplicated unless stated). Run it
-with `python scripts/carla_suite.py --variants lowest`; scores are against
-CARLA ground truth (`scripts/eval_case.py`). Each case has two drivers'
-statements (one in Hinglish) with 3-5 checkable claims.
-
-**Every verdict correct: 63 of 63 claims, 16 of 16 scenarios. Impact found in
-all 15 crashes, and correctly NOT found in the near miss.**
-
-| Scenario | What it tests | Impact error (s) | A speed err | A in 90% | B speed err | B in 90% | Claims |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| base | side impact 50 vs 30 km/h, clear day | -0.16 | 7.65% | 83.3% | 9.95% | 66.7% | 4/4 |
-| slow | 25 vs 15 km/h | -0.36 | 10.49% | 81.0% | 11.76% | 66.7% | 4/4 |
-| fast | 80 vs 40 km/h | -0.08 | 6.77% | 81.0% | 7.12% | 88.1% | 4/4 |
-| braking | A brakes at 6 m/s^2 for 1.5 s (65 -> ~33 km/h) | -0.12 | 6.35% | 95.3% | 8.75% | 69.8% | 5/5 |
-| rear_end | A 50 km/h into B 20 km/h, same lane | 0.00 | 8.08% | 76.2% | 8.78% | 88.1% | 3/3 |
-| near_miss | B clears 1 s before A | no impact (correct) | 1.85% | 88.4% | 4.67% | 58.1% | 3/3 |
-| motorcycle | car hits a scooter at 35 km/h | -0.08 | 8.31% | 73.8% | 13.35% | 54.5% | 4/4 |
-| night | same crash at night | -0.12 | 8.79% | 69.0% | 9.62% | 88.1% | 4/4 |
-| rain | heavy rain | -0.12 | 6.47% | 88.1% | 9.09% | 76.2% | 4/4 |
-| traffic | 8 other cars driving around | -0.12 | 7.62% | 85.7% | 9.06% | 76.2% | 4/4 |
-| junction2 | another junction | -0.12 | 8.93% | 64.3% | 11.65% | 61.9% | 4/4 |
-| high_camera | camera 18 m up, 25 m beyond | -0.08 | 5.93% | 100.0% | 9.59% | 64.3% | 4/4 |
-| low_res | 640x360, CRF 36 | -0.12 | 7.51% | 81.0% | 11.06% | 76.2% | 4/4 |
-| heavy_drops | 25% of frames dropped | -0.12 | 6.15% | 97.5% | 7.17% | 82.5% | 4/4 |
-| no_drops | no dropped/duplicated frames | -0.16 | 6.34% | 35.4% | 1.47% | 100.0% | 4/4 |
-| no_clock | no burned-in clock | -0.12 | 12.2% | 71.4% | 14.81% | 57.1% | 4/4 |
-
-Speed error is the mean absolute error over the last 2 s before the impact (or
-closest approach); "in 90%" is how often the true speed lies inside our 90%
-interval there. Impact error is the true time of the frame we call the impact
-minus the true impact time. Median speed error: A 7.6%, B 9.3%.
-
-Known limits (measured, not hidden):
-- **Impact is called ~0.1 s early** (up to 0.36 s at 25 km/h): it is the first
-  frame the two road users are within 4.5 m, and contact points are wheels or
-  mask bottoms, not bumpers. No verdict depends on it.
-- **Speeds read ~3-4% fast** for a car driving toward the camera: the lowest
-  mask pixel is the bumper (~0.3 m up), not the tyre. Following the wheels
-  (`contact_mode: wheels`) did not help at this resolution: SAM found 2 wheels
-  in the whole base clip.
-- **90% intervals are too narrow** for some vehicles (55-70% coverage instead of
-  90%; 35% for A in no_drops). Claims are judged with a +-10% tolerance on top,
-  which is why verdicts still hold.
-- **No burned-in clock: 12-15% speed error.** Frame drops are then invisible;
-  the intervals widen for them but not fully.
-- **Signal claims are "can't tell" here**: at CARLA's Low quality the lamps are
-  not lit. Signal reading needs a higher-quality render or real footage.
-
-What the suite runs caught and fixed (each now has a regression test in
-`tests/test_impact_refine.py`): Wonder matching both statements to one
-vehicle, or none (now: close-ups of the two vehicles involved, a geometry check,
-one retry); a dropped frame read as braking in both cars at once (braking now
-needs a lasting speed drop); "braked hard" read as "no"; claims with the wrong
-label or merged values (now repaired or re-asked once, else shown as "could not
-read", never given a verdict); the car behind hidden by the car in front in a
-rear-end.
-
-### Held-out check: multi-car scenes (Oct 31)
-
-After the 16 passed, two scenes the engine was never tuned on were designed:
-`crowded` (an oncoming car passes A one lane over just before the crash, a
-car waits at the light) and `chain` (A runs into B at a red light and pushes it
-into C). What came out of it:
-
-- **A false-impact bug, found and fixed in general.** Two cars passing in
-  opposite directions get close, overlap in the image and close fast, so the
-  old detector would call it a crash on any two-way road. An impact now also
-  has to change the motion (a vehicle is pushed or slowed: either velocity, or
-  the relative velocity, changes by 30% of the closing speed). Unit test
-  `test_no_impact_for_oncoming_cars_passing_in_adjacent_lanes`; all 16
-  scenarios unchanged.
-- **Known limit: vehicles the camera cannot see.** Seen end-on 30-40 m away,
-  three queued cars hid each other (one was hidden in all 181 frames): Sakshi
-  reported no impact and "can't tell", not an invented result.
-- **Product rule: the user confirms who drove which vehicle.** In that run a
-  statement was matched to the wrong (indistinguishable, distant) car and got
-  a verdict. Wonder's match is a suggestion; the UI shows it and asks.
-- The CARLA set-up for these scenes is not finished (the planned crash did not
-  render cleanly), so they are `EXPERIMENTAL` in `scripts/carla_suite.py` and
-  not part of the scores above.
-
-## Simulating crashes with CARLA (`sim/`)
-
-CARLA renders a crash with exact ground truth (positions, speeds, collision
-time, signal states), so every accuracy number can be checked. Tested with
-CARLA 0.9.16 on Ubuntu 24.04, RTX 3050 laptop (6 GB).
-
-### One-time setup
-
-1. Download the CARLA 0.9.16 Linux package from
-   https://carla.readthedocs.io/en/latest/download/ (about 20 GB) and extract it:
-
-```bash
-mkdir -p ~/carla && tar -xzf ~/Downloads/CARLA_0.9.16.tar.gz -C ~/carla
-```
-
-2. Install the matching Python client in the project venv (the versions must match):
-
-```bash
-cd <repo> && source .venv/bin/activate
-pip install carla==0.9.16
-```
-
-### Every session: two terminals
-
-**Terminal 1: the CARLA server** (leave it running; it goes quiet once ready).
-Start it on the map you will render: switching maps from a script can crash
-CARLA on laptops.
-
-```bash
-cd ~/carla                      # the folder that contains CarlaUE4.sh
-./CarlaUE4.sh -RenderOffScreen -quality-level=Low -prefernvidia -nosound
-```
-
-**Terminal 2: the repo.** Run one command at a time and check each result.
-
-```bash
-cd <repo> && source .venv/bin/activate
-
-# 0. Server reachable? Prints the loaded map (Town10HD_Opt by default)
-python -c "import carla; c=carla.Client('localhost',2000); c.set_timeout(30); print(c.get_world().get_map().name)"
-
-# 1. Render the crash. Ends with "impact at frame N (t = ... s)" = ground truth
-python sim/junction_crash.py --out cases/carla_002 --seed 1
-
-# 2. Make it look like cheap CCTV: frame drops/duplicates, 960x540, CRF 32, burned-in clock
-python sim/degrade.py cases/carla_002
-
-# 3. Full pipeline with SAM 3.1, Muse Spark, Muse Wonder (live API calls, cached)
-python scripts/run_case.py cases/carla_002
-
-# 4. Score against ground truth: speed error, interval coverage, impact time, claim verdicts
-python scripts/eval_case.py cases/carla_002
-
-# 5. See the detected impact frame -> cases/carla_002/impact.png
-python scripts/show_impact.py cases/carla_002
-```
-
-Check the camera view after step 1: open `cases/carla_002/frames/000000.png`.
-
-### Options for `sim/junction_crash.py`
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `--out` | (required) | case folder, e.g. `cases/carla_003` |
-| `--seed` | 1 | which junction and approach pair; change it for a new scene |
-| `--v1`, `--v2` | 50, 30 | speeds of car A (white) and car B (blue), km/h |
-| `--lead` | 5 | seconds from start to impact |
-| `--town` | Town10HD_Opt | must be the map the server is running |
-| `--cam-ahead` | 15 | camera distance beyond the junction along A's road, m |
-| `--cam-side` | 8 | camera offset away from B's side, m |
-| `--cam-height` | 11 | camera height, m |
-| `--fov` | 90 | horizontal field of view, degrees |
-| `--kind` | t_bone | `t_bone`, `rear_end` (A into B ahead, same lane), `near_miss` (no impact expected) |
-| `--b-vehicle` | car | `car` or `motorcycle` (a scooter where the build has one) |
-| `--brake-decel`, `--brake-before` | 0, 0 | A brakes at this m/s^2, starting this many s before impact |
-| `--miss-gap` | 1.0 | near_miss: B passes this many s before A |
-| `--weather` | ClearNoon | any `carla.WeatherParameters` preset: `ClearNight`, `HardRainNoon`, ... |
-| `--traffic` | 0 | other cars on autopilot around the junction |
-
-`sim/degrade.py` options: `--drop 0.12` (fraction of frames dropped), `--dup 0.03`,
-`--crf 32`, `--scale 0.75`, `--click-noise-px 2`, `--seed 0`, `--no-clock` (no burned-in
-clock), `--claim-a 30` (speed the white car's driver claims). It writes the
-drivers' statements to suit the scenario, and the verdict a correct checker
-should give for each claim into `gt.json` only (the pipeline never sees it).
-
-### The test suite (one command)
-
-`scripts/carla_suite.py` renders 12 scenarios plus 4 footage variants, runs
-the full pipeline on each twice (contact point from the lowest mask pixel, and
-from the wheels), scores everything against ground truth, and writes
-`cases/suite/summary.md`. It resumes where it stopped, so a CARLA crash costs
-only the scenario in progress.
-
-```bash
-python scripts/carla_suite.py --list              # what each scenario tests
-python scripts/carla_suite.py                     # everything (about 1.5-2 hours)
-python scripts/carla_suite.py --only base,near_miss --variants lowest   # a quick subset
-```
-
-Several scenarios for the accuracy table:
-
-```bash
-for s in 1 2 3; do
-  python sim/junction_crash.py --out cases/carla_s$s --seed $s --v1 50 --v2 30 && \
-  python sim/degrade.py cases/carla_s$s && \
-  python scripts/run_case.py cases/carla_s$s && \
-  python scripts/eval_case.py cases/carla_s$s > cases/carla_s$s/eval.json
-done
-```
-
-### Troubleshooting
-
-| Symptom | Fix |
+| Model | Job |
 | --- | --- |
-| `Segmentation fault` / `Signal 11` when a script loads a map | Start the server on that map instead, and pass the same `--town` |
-| `GameThread timed out waiting for RenderThread` at startup | An old CARLA still holds the GPU: `pkill -9 -f CarlaUE4-Linux-Shipping`, check `nvidia-smi`, plug in the charger; reboot if it persists |
-| `time-out ... waiting for the simulator` | The server crashed or is not started: check terminal 1 |
-| A building, tree or pole blocks the view | `--cam-ahead 22`, `--cam-height 14`, `--cam-side 4`, or another `--seed` |
-| `did NOT collide` | Another `--seed` |
-| `Fewer than 4 road points are in view` (degrade) | Move the camera (options above) and render again |
-| Signal claims always "can't tell" | Expected at `-quality-level=Low`: CARLA does not light the lamps |
-| GPU memory full (`nvidia-smi` near 6 GB) | Close Chrome; keep `-quality-level=Low` |
+| SAM 3.1 | Tracks every car, motorcycle, person and traffic light with pixel masks. The mask's lowest band gives the point where tyre meets road. |
+| Muse Spark | Reads the burned-in CCTV clock to recover true frame times, and reads a traffic light when the colour rule is unsure. |
+| Muse Wonder | Describes each road user, suggests who drove what, extracts checkable claims in Hindi or English, and writes the report. A validator rejects any number the engine did not produce. |
+| Muse Voice Transcribe | Transcribes recorded statements. |
+| Muse Glimmer | Optional private mode (`SAKSHI_PRIVATE=1`): claims and report run on your own GPU. |
+| Muse Code | Used in development only. |
 
-Stop the server with Ctrl+C in terminal 1 (or `pkill -f CarlaUE4`).
+## Results
 
-To share a case for debugging (without the 200 PNG frames):
+Tested on 16 crashes rendered in CARLA and degraded to cheap CCTV, with exact ground truth the pipeline never sees:
 
-```bash
-cd cases/carla_002 && zip ../carla_002_debug.zip input.mp4 case.json case_input.json gt.json gt_clean.json
-```
+- **0 wrong verdicts in 63 claims:** 48 right, and 15 answered "can't tell".
+- **15 of 15 impacts found**, a median 0.12 s off. The near miss was correctly called no impact.
+- **8.5% median speed error** before impact.
 
-## Backend (`api/app.py`)
+What still falls short:
 
-`uvicorn api.app:app --reload`. Upload → frame for calibration → calibration →
-confirm party map → `GET /cases/{id}/run` (server-sent events per stage) → `case.json`.
+- The 90% ranges run narrow: they contain the true speed about 76% of the time.
+- These scores come from simulation. Real footage has been tested on only a few clips, without true speeds.
+- With no burned-in clock, speed error rises to 12–15%.
 
-## case.json (what the UI reads)
+## More detail
 
-`clip`, `clock` (method, per-frame times, inferred drops), `calibration`
-(H, points, stop line), `tracks` (per frame: box, contact point, mask RLE local
-to the box), `trajectories` (t, x, y, speed with lo90/hi90, acceleration),
-`events` (impact), `facts` (speeds before/at impact, braking, momentum check,
-signal changes), `signals`, `statements`, `party_to_track`, `scene`, `claims`,
-`report` (with number-validator result), `disclaimer`.
+- [Validation](docs/validation.md): every scenario, known limits, and calibration methods
+- [Architecture](docs/architecture.md): the engine, the API, and `case.json`
+- [CARLA](docs/carla.md): rendering and scoring the test suite yourself
+- [Hosting](#hosting): running a public copy
 
-## Data and licences
+## Hosting
 
-Only simulator output, our own recordings, and datasets whose terms allow this
-use. See `THIRD_PARTY_NOTICES.md`.
-
-## Calibrating without a survey
-
-Nobody handed a CCTV clip knows the road in metres, so the calibration screen offers three methods.
-All of them feed the same engine; `sakshi/engine/calib_sources.py` turns each into ground points.
-
-| Method | The user does | Uncertainty |
-|---|---|---|
-| Road markings | clicks 4 corners of a rectangle with an assumed size | the size varies as one value per Monte Carlo draw, because a wrong lane width rescales everything |
-| Satellite map | clicks the same road marks on the frame and on a map | per point, from the map zoom, and from the fit residual with 5 or more points |
-| I measured it | types ground coordinates | as before (results unchanged) |
-
-Exactly 4 points always fit, so the report and the UI never present their 0 m error as a check.
-`scripts/calibration_coverage.py` replays the CARLA suite's tracks through these methods against true
-speeds and writes the table on the Validation screen. Small rectangles stay honest only through very
-wide intervals; a long rectangle or satellite points are far more useful. These scores come from
-projecting known road positions, not from people clicking real footage or real satellite imagery.
-
-## Hosting a demo
-
-One server can run both the UI and the API:
-
-```bash
-docker build -t sakshi .
-docker run -p 8000:8000 --env-file .env -e SAKSHI_ACCESS_CODE=choose-a-code -v sakshi-data:/app/cases -v sakshi-cache:/app/cache sakshi
-```
-
-Or without Docker, run `npm run build` in `ui/`, then `uvicorn api.app:app`. Open http://localhost:8000.
-
-Every run spends the API key in `MODEL_API_KEY`, so **set `SAKSHI_ACCESS_CODE` on any public server**. It also
+Every live run spends the key in `MODEL_API_KEY`, so set `SAKSHI_ACCESS_CODE` on any public server. It also
 keeps uploaded footage private. `SAKSHI_MAX_UPLOAD_MB`, `SAKSHI_MAX_CLIP_SECONDS` and `SAKSHI_MAX_RUNS` limit use.
+To keep cases between restarts, add `-v sakshi-data:/app/cases -v sakshi-cache:/app/cache` to `docker run`.
 
-Recorded benchmark cases need no backend. Results are labelled by what actually produced them: "Recorded
-benchmark", "Live run" with its call counts, "Re-run from cache", or "Stored tracks". `docs/model_usage_summary.json`
-summarises logged model calls (`python scripts/usage_report.py --export`), and `docs/demo.md` is the demo guide.
+## External sources and tools
+
+| What | Used for | Where |
+| --- | --- | --- |
+| **Transport for London JamCam** (Powered by TfL Open Data; TfL does not endorse Sakshi) | The real London traffic clip, camera 06600 at Cromwell Rd / Earls Court Rd | Overview replay, `ui/public/overview/` |
+| **CARLA simulator** | Rendered test crashes with exact ground truth | 16 recorded cases, Validation, `sim/`, `ui/public/scenarios/` |
+| **Meta Model API** (SAM 3.1, Muse Spark, Muse Wonder, Muse Voice Transcribe) | Tracking, reading clocks and signals, claims, reports, transcription | `sakshi/meta/` |
+| **Muse Glimmer** open weights | Optional private mode | `sakshi/meta/client.py` |
+| **meta-sam-parser**, **meta-model-cookbook** | Decoding SAM output; request and stream-handling patterns | `sakshi/meta/sam.py`, `sakshi/meta/voice.py` |
+| **Leaflet** | The map on the satellite calibration screen | `ui/src/components/SatelliteMap.tsx` |
+| **Esri World Imagery** (© Esri, Maxar, Earthstar Geographics) | Satellite map tiles, fetched at run time | Calibrate screen |
+| **OpenStreetMap** (© OpenStreetMap contributors) and **Nominatim** | Street map tiles and place search, fetched at run time | Calibrate screen |
+| **WHO**, *Global status report on road safety 2023* | Worldwide road deaths figure | Overview |
+| **MoRTH**, *Road Accidents in India 2023* | India road accident figures | Overview |
+| **FFmpeg**, **OpenCV**, **NumPy**, **SciPy**, **FastAPI** | Video handling, vision helpers, numerics, API | Backend |
+| **React**, **Three.js** with React Three Fiber and Drei, **GSAP**, **d3-scale**, **Tailwind CSS**, **Lucide**, **Zustand**, **Vite** | Interface, 3D replay, animation, charts, icons, state, build | `ui/` |
+| **IBM Plex** fonts | Interface type | `ui/` |
+
+Any other footage comes from our own recordings. Licence details are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
