@@ -170,6 +170,25 @@ input[type='number']::-webkit-outer-spin-button {
 }
 .replay-stage {
   box-shadow: 0 0 0 1px rgba(242, 192, 55, 0.12), 0 30px 100px -24px rgba(242, 192, 55, 0.45);
+  transition: box-shadow 0.5s ease, border-color 0.5s ease;
+}
+/* Pointing at the replay turns its light up; the breathing halo keeps going underneath. */
+.replay-boost {
+  opacity: 0;
+  background: radial-gradient(50% 50% at 50% 50%, rgba(255, 210, 90, 0.75), rgba(242, 192, 55, 0.3) 70%, transparent 100%);
+  filter: blur(52px);
+  transition: opacity 0.6s ease;
+}
+.replay-figure:hover .replay-boost {
+  opacity: 1;
+}
+.replay-figure:hover .replay-stage {
+  border-color: rgba(242, 192, 55, 0.7);
+  box-shadow: 0 0 0 1px rgba(242, 192, 55, 0.3), 0 0 60px -10px rgba(242, 192, 55, 0.55), 0 30px 120px -20px rgba(242, 192, 55, 0.7);
+}
+/* The statement under the replay: a quieter, steady light than the replay's. */
+.claim-glow {
+  box-shadow: 0 0 0 1px rgba(242, 192, 55, 0.06), 0 16px 60px -22px rgba(242, 192, 55, 0.32);
 }
 /* The front page's sections below the opening: road-paint light from alternating sides,
    painted behind each section's content. */

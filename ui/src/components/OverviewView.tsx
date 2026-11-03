@@ -420,7 +420,7 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
 
           <div className="hero-sub relative mt-8">
             {heroClaim && heroClaim.value_number != null && heroClaim.measured && (
-              <div className="mx-auto max-w-3xl rounded-lg border border-line bg-asphalt-900 p-4 text-left sm:p-5">
+              <div className="claim-glow mx-auto max-w-3xl rounded-lg border border-paint/20 bg-asphalt-900 p-4 text-left sm:p-5">
                 <div className="flex items-start justify-between gap-3">
                   <blockquote className="said text-[18px] leading-snug sm:text-[20px]">“{heroClaim.quote}”</blockquote>
                   <VerdictTag verdict={heroClaim.verdict} className="mt-1" />
@@ -479,14 +479,14 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
               </p>
               </div>
             </div>
-            <dl className="grid content-start gap-px self-start overflow-hidden rounded border border-line bg-line sm:grid-cols-2" data-reveal>
-              <div className="bg-asphalt-900 p-6">
-                <dd className="measured text-[38px] leading-none text-bone">1.19 M</dd>
-                <dt className="mt-2 text-[13px] leading-snug text-bone-300">road deaths a year worldwide<sup className="ml-0.5 text-bone-500">1</sup></dt>
+            <dl className="flex flex-col gap-9 self-center lg:items-end lg:justify-self-end lg:text-right" data-reveal>
+              <div className="group cursor-default">
+                <dd className="measured text-[52px] leading-none text-bone transition-colors duration-300 group-hover:text-[#f7d77a]">1.19 M</dd>
+                <dt className="mt-2 text-[14px] text-bone-300">road deaths a year, worldwide<sup className="ml-0.5 text-bone-500">1</sup></dt>
               </div>
-              <div className="bg-asphalt-900 p-6">
-                <dd className="measured text-[38px] leading-none text-bone">480,583</dd>
-                <dt className="mt-2 text-[13px] leading-snug text-bone-300">reported road accidents in India in 2023, with 172,890 deaths<sup className="ml-0.5 text-bone-500">2</sup></dt>
+              <div className="group cursor-default">
+                <dd className="measured text-[52px] leading-none text-bone transition-colors duration-300 group-hover:text-[#f7d77a]">480,583</dd>
+                <dt className="mt-2 text-[14px] text-bone-300">road accidents in India in 2023, 172,890 deaths<sup className="ml-0.5 text-bone-500">2</sup></dt>
               </div>
             </dl>
           </div>

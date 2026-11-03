@@ -153,10 +153,11 @@ export const HeroReplay: React.FC<HeroReplayProps> = ({ data, videoUrl, source, 
   );
 
   return (
-    <figure ref={root} className="relative">
+    <figure ref={root} className="replay-figure relative">
       {/* The light is behind the frame and never over the measurements. */}
       <div className="replay-rays pointer-events-none absolute -inset-x-[10%] -top-[30%] h-[70%]" aria-hidden="true" />
       <div className="replay-halo pointer-events-none absolute -inset-[6%]" aria-hidden="true" />
+      <div className="replay-boost pointer-events-none absolute -inset-[8%]" aria-hidden="true" />
 
       <div
         role="button"
