@@ -160,7 +160,7 @@ export const CalibrationMethodPanel: React.FC<Props> = ({ method, points, rect, 
             <p>Know the car in the clip? Its wheelbase sets the road’s scale, when two of its wheels are in view. Speeds are approximate and statements are not checked.</p>
             <div className="flex items-center gap-2">
               <input type="number" step="0.01" min="1.5" max="8" value={wheelbase} onChange={(e) => setWheelbase(e.target.value)}
-                     aria-label="Wheelbase in metres" placeholder="2.58"
+                     aria-label="Wheelbase in metres" placeholder="e.g. 2.6"
                      className="measured w-20 rounded border border-line bg-asphalt-850 px-2 py-1 text-[12.5px] text-bone" />
               <span>m</span>
               <Button size="sm" variant="secondary" busy={estimating} disabled={!onWheelbase || !wheelbase} onClick={fromWheelbase}>Use wheelbase</Button>
