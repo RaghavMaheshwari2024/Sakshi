@@ -21,3 +21,4 @@
 - Figures cited on the Overview: WHO, Global status report on road safety 2023; MoRTH, Road Accidents in India 2023.
 - Interface libraries: React, React Three Fiber, Drei, Three.js, d3-scale, Tailwind CSS, Lucide, Zustand and Vite (each under its own open-source licence, see `ui/package.json`); GSAP under its own standard licence; IBM Plex fonts via Fontsource (SIL Open Font License).
 - FFmpeg: decodes and probes video in the backend and the Docker image, under its own licence.
+- Tonghua, Jilin CCTV clip of a rear-end collision, 11 March 2025, used in the demo video and not stored in this repo: https://commons.wikimedia.org/wiki/File:Jilin_Tonghua_car_rear-end_collision_accident,_2025-03-11.webm. Wikimedia Commons marks it public domain as footage from an automated CCTV camera, a basis that page notes is legally unclear in most jurisdictions. Source given there: Douyin.

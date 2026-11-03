@@ -135,6 +135,7 @@ To keep cases between restarts, add `-v sakshi-data:/app/cases -v sakshi-cache:/
 | What | Used for | Where |
 | --- | --- | --- |
 | **Transport for London JamCam** (Powered by TfL Open Data; TfL does not endorse Sakshi) | The real London traffic clip, camera 06600 at Cromwell Rd / Earls Court Rd | Overview replay, `ui/public/overview/` |
+| **[Tonghua, Jilin CCTV clip](<https://commons.wikimedia.org/wiki/File:Jilin_Tonghua_car_rear-end_collision_accident,_2025-03-11.webm>)** (Wikimedia Commons, marked public domain as automated CCTV; originally posted on Douyin) | A real collision on a fixed street camera: a white van hits a parked car, 11 March 2025 | Demo video; not stored in this repo |
 | **CARLA simulator** | Rendered test crashes with exact ground truth | 16 recorded cases, Validation, `sim/`, `ui/public/scenarios/` |
 | **Meta Model API** (SAM 3.1, Muse Spark, Muse Wonder, Muse Voice Transcribe) | Tracking, reading clocks and signals, claims, reports, transcription | `sakshi/meta/` |
 | **Muse Glimmer** open weights | Optional private mode | `sakshi/meta/client.py` |
