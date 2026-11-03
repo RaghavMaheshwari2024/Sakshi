@@ -301,7 +301,8 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
         tl.from('.hero-logo', { autoAlpha: 0, scale: 0.9, duration: 0.9 }, 0)
           .from('.hero-road path', { drawSVG: '50% 50%', duration: 1.6, stagger: 0.05, ease: 'power2.inOut' }, 0)
           .from(split.lines, { yPercent: 105, duration: 0.9, stagger: 0.09, ease: 'power4.out' }, 0.1)
-          .from('.hero-replay', { autoAlpha: 0, y: 34, scale: 0.97, duration: 1.1 }, 0.45)
+          .from('.hero-lede', { autoAlpha: 0, y: 10, duration: 0.6 }, 0.4)
+          .from('.hero-replay', { autoAlpha: 0, y: 34, scale: 0.97, duration: 1.1 }, 0.55)
           .from('.hero-sub > *', { autoAlpha: 0, y: 12, duration: 0.6, stagger: 0.08 }, 0.8);
         // Scrolling drives down the road: it slides, widens and dims together.
         gsap.to('.hero-road', {
@@ -410,9 +411,12 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
           <h1 className="hero-title tracking-[-0.025em] text-bone">
             <span className="sr-only">Sakshi. </span>
             <span className="hero-logo flex justify-center drop-shadow-[0_0_34px_rgba(242,192,55,0.45)]" aria-hidden="true"><Mark className="h-[clamp(84px,10vw,140px)] w-[clamp(84px,10vw,140px)]" /></span>
-            <span className="hero-line mt-5 block text-[clamp(32px,4vw,54px)] font-semibold leading-[1.1]">People remember.</span>
-            <span className="hero-line mt-4 block font-serif text-[clamp(32px,4vw,54px)] font-light italic leading-[1.1] text-paint">Physics measures.</span>
+            <span className="hero-line mt-5 block text-[clamp(32px,4vw,54px)] font-semibold leading-[1.1]">Stories change.</span>
+            <span className="hero-line mt-4 block font-serif text-[clamp(32px,4vw,54px)] font-light italic leading-[1.1] text-paint">The footage doesn’t.</span>
           </h1>
+          <p className="hero-lede mx-auto mt-6 max-w-[40rem] text-[17px] leading-relaxed text-bone-200">
+            Sakshi (<span lang="hi">साक्षी</span>, “witness”) measures speed and timing from ordinary road video, with an honest range, and checks what people say against it.
+          </p>
 
           <div className="hero-replay relative mt-10 text-left sm:mt-12">
             {replay ? <HeroReplay data={replay} videoUrl={REPLAY_VIDEO} source="Real traffic camera, London · no crash" restFrame={REPLAY_REST_FRAME} /> : <div className="aspect-video animate-pulse rounded-xl bg-asphalt-800" />}
@@ -431,10 +435,7 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
                 </p>
               </div>
             )}
-            <p className="mx-auto mt-7 max-w-[38rem] text-[17px] leading-relaxed text-bone-200">
-              Sakshi (<span lang="hi">साक्षी</span>, “witness”) turns ordinary road footage into metres and seconds, then checks what each person said against them, with honest 90% intervals.
-            </p>
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
+            <div className="mt-7 flex flex-wrap items-center justify-center gap-2.5">
               <Button variant="primary" className="h-10 px-4 text-[14px]" icon={<ArrowRight className="h-4 w-4" />} onClick={onOpenCase}>
                 Open a case
               </Button>
