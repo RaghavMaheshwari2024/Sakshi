@@ -491,11 +491,13 @@ export const OverviewView: React.FC<{ onOpenCase: () => void; onNavigate: (v: Ac
             </dl>
           </div>
 
-          <div className="mt-14 grid gap-px overflow-hidden rounded border border-line bg-line md:grid-cols-3">
+          <div className="mt-14 grid gap-4 md:grid-cols-3">
             {AUDIENCE.map(([who, what]) => (
-              <div key={who} data-reveal className="bg-asphalt-900 p-6 transition-colors duration-300 hover:bg-asphalt-850">
-                <h3 className="text-[15px] text-bone">{who}</h3>
-                <p className="mt-1.5 text-[14px] leading-relaxed text-bone-300">{what}</p>
+              <div key={who} data-reveal className="audience-card group relative overflow-hidden rounded-lg border border-line bg-asphalt-900 p-6">
+                <span className="audience-glow pointer-events-none absolute inset-0" aria-hidden="true" />
+                <span className="relative block h-px w-8 bg-paint/60 transition-all duration-500 group-hover:w-16 group-hover:bg-paint" aria-hidden="true" />
+                <h3 className="relative mt-4 text-[16px] text-bone transition-colors duration-300 group-hover:text-paint">{who}</h3>
+                <p className="relative mt-2 text-[14px] leading-relaxed text-bone-300 transition-colors duration-300 group-hover:text-bone-200">{what}</p>
               </div>
             ))}
           </div>

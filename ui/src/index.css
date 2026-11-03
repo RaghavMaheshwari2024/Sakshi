@@ -184,6 +184,24 @@ input[type='number']::-webkit-outer-spin-button {
     radial-gradient(50% 60% at 100% 95%, rgba(242, 192, 55, 0.13), transparent 75%);
 }
 
+/* The audience cards on the front page light up from above when pointed at. */
+.audience-card {
+  transition: border-color 0.35s ease, box-shadow 0.35s ease, transform 0.35s ease;
+}
+.audience-card:hover {
+  border-color: rgba(242, 192, 55, 0.5);
+  box-shadow: 0 0 0 1px rgba(242, 192, 55, 0.12), 0 18px 60px -18px rgba(242, 192, 55, 0.45);
+  transform: translateY(-3px);
+}
+.audience-glow {
+  opacity: 0;
+  background: radial-gradient(120% 90% at 50% 0%, rgba(242, 192, 55, 0.22), rgba(242, 192, 55, 0.06) 55%, transparent 80%);
+  transition: opacity 0.35s ease;
+}
+.audience-card:hover .audience-glow {
+  opacity: 1;
+}
+
 /* The report is a document: printing drops the app around it. */
 @media print {
   html,
