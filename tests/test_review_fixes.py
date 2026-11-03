@@ -81,6 +81,79 @@ def test_impact_still_found_for_a_closing_collision():
     assert len(imp) == 1 and 0.6 <= imp[0]["t"] <= 1.0 and imp[0]["confirmed"] is True
 
 
+def _pair_tracks(n, b_frames=None):
+    return [{"id": "car-0", "concept": "car", "frames": _boxes(n, 0)},
+            {"id": "car-1", "concept": "car", "frames": b_frames or _boxes(n, 30)}]
+
+
+def test_no_impact_when_a_car_drives_past_a_parked_car_that_stays_parked():
+    # The boxes overlap and the gap shrinks, but the parked car never moves.
+    t = np.arange(0, 3, 0.04)
+    pa = np.c_[0 * t, 0 * t + 3.0]
+    pb = np.c_[6 * t - 9, 0 * t]
+    vb = np.where(t[:, None] < 1.5, [6.0, 0], [3.0, 0])  # it slows nearby, for its own reasons
+    res = {"car-0": _result("car-0", t, pa, np.zeros_like(pa)), "car-1": _result("car-1", t, pb, vb)}
+    assert events.detect_impacts(res, _pair_tracks(len(t))) == []
+
+
+def test_no_impact_at_the_first_frames_of_a_track():
+    # A car coming out from behind another: its track begins already overlapping.
+    t = np.arange(0, 3, 0.04)
+    keep = t >= 1.0
+    pa = np.c_[0 * t, 0 * t]
+    pb = np.c_[4 * t[keep] - 3, 0 * t[keep] + 2.0]
+    res = {"car-0": _result("car-0", t, pa, np.zeros_like(pa)),
+           "car-1": _result("car-1", t[keep], pb, np.tile([4.0, 0], (keep.sum(), 1)))}
+    res["car-1"].frames = np.arange(len(t))[keep]
+    boxes = [f for f in _boxes(len(t), 30) if f["i"] >= 25]
+    assert events.detect_impacts(res, _pair_tracks(len(t), boxes)) == []
+
+
+def test_no_impact_when_a_hidden_cars_track_ends_as_another_speeds_past():
+    t = np.arange(0, 3, 0.04)
+    keep = t <= 1.2
+    pa = np.c_[0 * t[keep] + 2.0, 0 * t[keep]]
+    pb = np.c_[8 * t - 8, 0 * t + 1.0]
+    res = {"car-0": _result("car-0", t[keep], pa, np.zeros_like(pa)),
+           "car-1": _result("car-1", t, pb, np.tile([8.0, 0], (len(t), 1)))}
+    res["car-0"].frames = np.arange(len(t))[keep]
+    tracks = [{"id": "car-0", "concept": "car", "frames": _boxes(int(keep.sum()), 0)},
+              {"id": "car-1", "concept": "car", "frames": _boxes(len(t), 30)}]
+    assert events.detect_impacts(res, tracks) == []
+
+
+def test_no_impact_when_a_car_slows_beside_a_person_who_walks_on():
+    t = np.arange(0, 3, 0.04)
+    pa = np.c_[np.minimum(4 * t, 6.0) - 6.0, 0 * t]
+    va = np.where(t[:, None] < 1.5, [4.0, 0], [0.0, 0])
+    pb = np.c_[0 * t + 2.0, 1.2 * t - 1.8]
+    res = {"car-0": _result("car-0", t, pa, va),
+           "person-0": _result("person-0", t, pb, np.tile([0, 1.2], (len(t), 1)))}
+    tracks = [{"id": "car-0", "concept": "car", "frames": _boxes(len(t), 0)},
+              {"id": "person-0", "concept": "person", "frames": _boxes(len(t), 30)}]
+    assert events.detect_impacts(res, tracks) == []
+
+
+def test_the_main_impact_is_the_hardest_confirmed_one_not_the_first():
+    def pair(names, start):
+        t = np.arange(0, 6, 0.04)
+        hit = np.minimum(t, start)
+        va = np.where(t[:, None] < start, [10.0, 0], [1.0, 0])
+        vb = np.where(t[:, None] < start, [0.0, 0], [6.0, 0])
+        pa = np.c_[10 * hit - 10 * start + np.clip(t - start, 0, None), 0 * t]
+        pb = np.c_[2.0 + 6 * np.clip(t - start, 0, None), 0 * t]
+        return {names[0]: _result(names[0], t, pa, va), names[1]: _result(names[1], t, pb, vb)}
+    t = np.arange(0, 6, 0.04)
+    res = {**pair(("car-0", "car-1"), 4.0)}
+    va = np.where(t[:, None] < 2.0, [2.0, 0], [0.8, 0])
+    vb = np.where(t[:, None] < 2.0, [0.0, 0], [1.2, 0])
+    res["car-2"] = _result("car-2", t, np.c_[2 * np.minimum(t, 2.0) - 4 + 50, 0 * t + 40], va)
+    res["car-3"] = _result("car-3", t, np.c_[0 * t + 2.0 + 50 + 1.2 * np.clip(t - 2, 0, None), 0 * t + 40], vb)
+    tracks = [{"id": i, "concept": "car", "frames": _boxes(len(t), 0)} for i in res]
+    imp = events.detect_impacts(res, tracks)
+    assert [e["tracks"] for e in imp][0] == ["car-0", "car-1"]
+
+
 def test_no_impact_for_oncoming_cars_passing_in_adjacent_lanes():
     # Planned for the crowded-junction scenario: an oncoming car passes A 3.5 m
     # to the side at 14 + 8 m/s closing speed. Gap, box overlap and closing

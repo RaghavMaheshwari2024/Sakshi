@@ -30,6 +30,8 @@ MAX_CONTACT_M_PER_PX = 0.3
 NEAR_MISS_MAX_GAP_M = 10.0  # about two car lengths, measured between tyre-line points
 MIN_WINDOW_COVERAGE = 0.6  # of a speed window's frames, or it is not measuring that stretch
 PARALLEL_COS = float(np.cos(np.radians(30.0)))
+MIN_KEPT_CLOSING_MS = 1.0  # still closing this fast after "contact": they did not touch
+MOMENTUM_SHARE = 0.3  # of the heavier road user's change: masses and measurements both vary
 
 
 def _boxes_by_frame(track: dict) -> dict[int, list[float]]:
@@ -86,6 +88,69 @@ def motion_changed(ra: TrackResult, rb: TrackResult, t: float, before=(0.6, 0.15
     return change >= max(min_ms, share * rel0)
 
 
+def _closing_between(ra: TrackResult, rb: TrackResult, t0: float, t1: float) -> float | None:
+    """Mean speed at which the two approach over [t0, t1] (m/s, > 0 = closing)."""
+    ma, mb = (ra.nominal.t >= t0) & (ra.nominal.t <= t1), (rb.nominal.t >= t0) & (rb.nominal.t <= t1)
+    if ma.sum() < 3 or mb.sum() < 3:
+        return None
+    d = ra.nominal.pos[ma].mean(0) - rb.nominal.pos[mb].mean(0)
+    n = float(np.linalg.norm(d))
+    return float(-(d @ (ra.nominal.vel[ma].mean(0) - rb.nominal.vel[mb].mean(0))) / n) if n > 1e-6 else 0.0
+
+
+def collision_evidence(ra: TrackResult, rb: TrackResult, t: float, mass_a: float, mass_b: float,
+                       before=(0.6, 0.15), after=(0.25, 0.8)) -> tuple[bool | None, float]:
+    """What contact at t must do physically, on top of `motion_changed`. Returns
+    (confirmed, severity in m/s). Boxes also overlap when a vehicle passes behind
+    or in front of another, or when one appears from behind it; none of these:
+
+    - Both must have been seen approaching: a track that only begins at t has
+      no approach to judge, it has just come out from behind something.
+    - The approach must stop: if they keep closing at half the speed or more,
+      one is passing the other, not hitting it.
+    - If one track ends just after t while the footage goes on, it was probably
+      hidden, not hit: the one still in view must have slowed towards it.
+    - Momentum: both must change, the lighter at least as much as the heavier.
+      A parked car that stays parked was not hit by the car passing it, and a
+      car slowing beside a person who walks on did not hit them."""
+    seen_a, seen_b = _mean_vel(ra, t - before[0], t - before[1]), _mean_vel(rb, t - before[0], t - before[1])
+    if seen_a is None or seen_b is None:
+        return False, 0.0
+    end = max(ra.nominal.t[-1], rb.nominal.t[-1])
+    after_a, after_b = _mean_vel(ra, t + after[0], t + after[1]), _mean_vel(rb, t + after[0], t + after[1])
+    if after_a is None and after_b is None:
+        return None, 0.0
+    if after_a is None or after_b is None:
+        if t + after[1] > end:  # the footage ends: nothing more can be said
+            return None, 0.0
+        vel0, vel1, gone = (seen_b, after_b, ra) if after_a is None else (seen_a, after_a, rb)
+        here = rb if after_a is None else ra
+        k = int(np.argmin(np.abs(here.nominal.t - t)))
+        to_gone = gone.nominal.pos[int(np.argmin(np.abs(gone.nominal.t - t)))] - here.nominal.pos[k]
+        n = float(np.linalg.norm(to_gone))
+        if n < 1e-6:
+            return None, 0.0
+        toward0, toward1 = float(vel0 @ to_gone) / n, float(vel1 @ to_gone) / n
+        return (False, 0.0) if toward0 <= 0 or toward1 >= 0.5 * toward0 else (None, round(toward0 - toward1, 2))
+    change_a, change_b = float(np.linalg.norm(after_a - seen_a)), float(np.linalg.norm(after_b - seen_b))
+    severity = round(max(change_a, change_b), 2)
+    closing0 = _closing_between(ra, rb, t - before[0], t - before[1])
+    closing1 = _closing_between(ra, rb, t + after[0], t + after[1])
+    if closing0 is not None and closing1 is not None and closing1 >= max(MIN_KEPT_CLOSING_MS, 0.5 * closing0):
+        return False, 0.0
+    light, heavy = (change_a, change_b) if mass_a < mass_b else (change_b, change_a)
+    if mass_a == mass_b:
+        light, heavy = min(light, heavy), max(light, heavy)
+    if light < MOMENTUM_SHARE * heavy:
+        return False, 0.0
+    return True, severity
+
+
+def _typical_mass(concept: str) -> float:
+    lo, hi = MASS_RANGES.get(concept, (50, 20000))
+    return (lo + hi) / 2
+
+
 def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
                    max_gap_m: float = 4.5, min_closing_ms: float = 1.0,
                    lookback_s: float = 0.6, H: np.ndarray | None = None) -> list[dict]:
@@ -99,7 +164,10 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
     in adjacent lanes DO close the gap fast, but neither is pushed or slowed,
     so they are not an impact (the search goes on for a later, real one). With
     too little footage after the candidate to tell, it is kept and marked
-    `confirmed: null`."""
+    `confirmed: null`. It must also pass `collision_evidence`.
+
+    Returned with the main collision first: confirmed before unconfirmed, then
+    the hardest, so a brief false contact cannot displace a real crash."""
     by_id = {t["id"]: t for t in tracks}
     impacts = []
     ids = [i for i in results if by_id[i]["concept"] in MOVERS]
@@ -125,14 +193,21 @@ def detect_impacts(results: dict[str, TrackResult], tracks: list[dict],
                 confirmed = motion_changed(ra, rb, t)
                 if confirmed is False:
                     continue  # they only passed close
+                evidence, severity = collision_evidence(ra, rb, t, _typical_mass(by_id[a]["concept"]),
+                                                        _typical_mass(by_id[b]["concept"]))
+                if evidence is False:
+                    continue
+                if evidence is None:
+                    confirmed = None
                 dt = float(np.median(np.diff(ra.nominal.t))) if len(ra.nominal.t) > 1 else 0.04
                 impacts.append(
                     {"type": "impact", "tracks": [a, b], "i": int(i), "t": round(t, 3),
                      "t_sigma": round(dt, 3), "ground_gap_m": round(gap, 2), "confirmed": confirmed,
+                     "severity_ms": severity,
                      "xy": np.round((ra.nominal.pos[ka] + rb.nominal.pos[kb]) / 2, 2).tolist()}
                 )
                 break
-    return sorted(impacts, key=lambda e: e["t"])
+    return sorted(impacts, key=lambda e: (e["confirmed"] is not True, -e["severity_ms"], e["t"]))
 
 
 def _paths_cross(va: np.ndarray, vb: np.ndarray) -> bool:

@@ -420,7 +420,8 @@ def _models_summary(tracks, stats, statements, scene, party, claims, report, liv
         if scene and assigned_by_person:
             did.append("described the scene (a person assigned the statements to vehicles)")
         elif scene:
-            did.append(f"matched {len(scene.get('party_to_track', []))} of {len(statements)} statements to road users")
+            matched = sum(1 for st in statements if st["id"] in (party or {}))
+            did.append(f"matched {matched} of {len(statements)} statements to road users")
         if claims and live:
             did.append(f"extracted {len(claims)} checkable claims")
         if report:
