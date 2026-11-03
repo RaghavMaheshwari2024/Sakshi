@@ -26,7 +26,7 @@ const REPLAY_CASE_URL = '/overview/replay_case.json';
 const REPLAY_REST_FRAME = 206;
 
 /** The demo's YouTube id. Its section and button stay hidden until this is set. */
-const DEMO_VIDEO_ID = '';
+const DEMO_VIDEO_ID = 'NICySaLsfz0';
 
 const AUDIENCE = [
   ['Surveyors and insurers', 'A measured account of the moments before impact, with its uncertainty stated, to set against each party’s version.'],

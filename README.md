@@ -17,7 +17,10 @@ physics engine does every sum. It supports expert review and never states who is
   <br><sub>A real London traffic camera (Powered by TfL Open Data): SAM 3.1 masks on the left, the same instant measured on the road on the right.</sub>
 </p>
 
-<!-- Demo video: add the link here -->
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=NICySaLsfz0"><img src="https://img.youtube.com/vi/NICySaLsfz0/maxresdefault.jpg" alt="The Sakshi demo video on YouTube" width="640"></a>
+  <br><b><a href="https://www.youtube.com/watch?v=NICySaLsfz0">Watch the 3-minute demo on YouTube</a></b>
+</p>
 
 ## For judges: run it in one go
 
