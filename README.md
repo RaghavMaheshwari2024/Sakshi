@@ -1,10 +1,21 @@
-# Sakshi
+<p align="center">
+  <img src="ui/public/sakshi.svg" alt="Sakshi logo: an eye over a road" width="112">
+</p>
 
-Physics-checked crash reconstruction from ordinary road video. Sakshi tracks every road user with
-**SAM 3.1**, turns pixels into metres and seconds with a deterministic physics engine, and checks what
-each person said against those measurements, with a 90% range on every speed.
+<h1 align="center">Sakshi</h1>
 
-It reports measurements to support expert review and never states who is at fault.
+<p align="center"><b>Stories change. The footage doesn't.</b></p>
+
+<p align="center">
+Sakshi (साक्षी, "witness") measures speed and timing from ordinary road video, with an honest range,<br>
+and checks what people say against it. Meta's <b>SAM 3.1</b> and <b>Muse</b> models read the footage; a deterministic<br>
+physics engine does every sum. It supports expert review and never states who is at fault.
+</p>
+
+<p align="center">
+  <img src="docs/media/replay.gif" alt="A London traffic camera with SAM 3.1 masks beside the same vehicles measured on the road in metres" width="900">
+  <br><sub>A real London traffic camera (Powered by TfL Open Data): SAM 3.1 masks on the left, the same instant measured on the road on the right.</sub>
+</p>
 
 <!-- Demo video: add the link here -->
 
@@ -46,6 +57,11 @@ The first build takes a few minutes. When the terminal shows `Application startu
 The terminal always says `Uvicorn running on http://0.0.0.0:8000`, whichever port you chose. That is the port inside the container, so go by the table above. The same rule applies to the `docker run` command with your own key below.
 
 ### What to check without a key
+
+<p align="center">
+  <img src="docs/media/investigate.jpg" alt="The Investigate screen: footage, road view, speed chart and statements checked against the measurements" width="900">
+  <br><sub>Investigate: a simulated crash with its footage, the road in metres, speed with its 90% range, and each statement checked.</sub>
+</p>
 
 The 16 cases in the case switcher are clearly labelled **Recorded benchmark**: stored results from the
 real pipeline, shown so every feature can be checked with no credentials.
@@ -104,6 +120,10 @@ The models read the scene. They never produce a number: every speed, distance an
 | Muse Code | Used in development only. |
 
 ## Results
+
+<p align="center">
+  <img src="docs/media/validation.jpg" alt="The Validation screen: scores for 16 simulated crashes, including where Sakshi falls short" width="900">
+</p>
 
 Tested on 16 crashes rendered in CARLA and degraded to cheap CCTV, with exact ground truth the pipeline never sees:
 
