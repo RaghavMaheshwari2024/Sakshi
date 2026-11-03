@@ -96,6 +96,20 @@ def test_no_impact_when_a_car_drives_past_a_parked_car_that_stays_parked():
     assert events.detect_impacts(res, _pair_tracks(len(t))) == []
 
 
+def test_no_impact_when_a_car_drives_on_past_a_parked_one():
+    # A car on a road behind passes "through" a parked car's position in the image
+    # and carries on at much the same speed; the parked car only jitters.
+    # Both seem to change enough (the parked car's position noise reads as 1.3 m/s),
+    # but they carry on apart at most of their old relative speed.
+    t = np.arange(0, 3, 0.04)
+    pa = np.c_[0 * t, 0 * t]
+    va = np.where(t[:, None] < 1.5, [0.0, 0], [1.3, 0])
+    pb = np.c_[12 * t - 18, 0 * t + 0.5]
+    vb = np.where(t[:, None] < 1.5, [12.0, 0], [8.0, 0])
+    res = {"car-0": _result("car-0", t, pa, va), "car-1": _result("car-1", t, pb, vb)}
+    assert events.detect_impacts(res, _pair_tracks(len(t))) == []
+
+
 def test_no_impact_at_the_first_frames_of_a_track():
     # A car coming out from behind another: its track begins already overlapping.
     t = np.arange(0, 3, 0.04)
@@ -138,10 +152,11 @@ def test_the_main_impact_is_the_hardest_confirmed_one_not_the_first():
     def pair(names, start):
         t = np.arange(0, 6, 0.04)
         hit = np.minimum(t, start)
-        va = np.where(t[:, None] < start, [10.0, 0], [1.0, 0])
-        vb = np.where(t[:, None] < start, [0.0, 0], [6.0, 0])
-        pa = np.c_[10 * hit - 10 * start + np.clip(t - start, 0, None), 0 * t]
-        pb = np.c_[2.0 + 6 * np.clip(t - start, 0, None), 0 * t]
+        # Mostly inelastic, as car crashes are: they part at a fraction of the closing speed.
+        va = np.where(t[:, None] < start, [10.0, 0], [3.0, 0])
+        vb = np.where(t[:, None] < start, [0.0, 0], [4.5, 0])
+        pa = np.c_[10 * hit - 10 * start + 3 * np.clip(t - start, 0, None), 0 * t]
+        pb = np.c_[2.0 + 4.5 * np.clip(t - start, 0, None), 0 * t]
         return {names[0]: _result(names[0], t, pa, va), names[1]: _result(names[1], t, pb, vb)}
     t = np.arange(0, 6, 0.04)
     res = {**pair(("car-0", "car-1"), 4.0)}

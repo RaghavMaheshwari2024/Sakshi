@@ -32,6 +32,7 @@ MIN_WINDOW_COVERAGE = 0.6  # of a speed window's frames, or it is not measuring 
 PARALLEL_COS = float(np.cos(np.radians(30.0)))
 MIN_KEPT_CLOSING_MS = 1.0  # still closing this fast after "contact": they did not touch
 MOMENTUM_SHARE = 0.3  # of the heavier road user's change: masses and measurements both vary
+KEPT_RELATIVE_SPEED = 0.5  # of the speed between them: car crashes part far slower than this
 
 
 def _boxes_by_frame(track: dict) -> dict[int, list[float]]:
@@ -107,7 +108,9 @@ def collision_evidence(ra: TrackResult, rb: TrackResult, t: float, mass_a: float
     - Both must have been seen approaching: a track that only begins at t has
       no approach to judge, it has just come out from behind something.
     - The approach must stop: if they keep closing at half the speed or more,
-      one is passing the other, not hitting it.
+      one is passing the other, not hitting it. Nor may they carry on at half
+      their relative speed or more in any direction: a car that drives on past
+      a parked one at much the same speed went behind or in front of it.
     - If one track ends just after t while the footage goes on, it was probably
       hidden, not hit: the one still in view must have slowed towards it.
     - Momentum: both must change, the lighter at least as much as the heavier.
@@ -132,6 +135,9 @@ def collision_evidence(ra: TrackResult, rb: TrackResult, t: float, mass_a: float
             return None, 0.0
         toward0, toward1 = float(vel0 @ to_gone) / n, float(vel1 @ to_gone) / n
         return (False, 0.0) if toward0 <= 0 or toward1 >= 0.5 * toward0 else (None, round(toward0 - toward1, 2))
+    rel0, rel1 = float(np.linalg.norm(seen_a - seen_b)), float(np.linalg.norm(after_a - after_b))
+    if rel1 >= KEPT_RELATIVE_SPEED * rel0:
+        return False, 0.0
     change_a, change_b = float(np.linalg.norm(after_a - seen_a)), float(np.linalg.norm(after_b - seen_b))
     severity = round(max(change_a, change_b), 2)
     closing0 = _closing_between(ra, rb, t - before[0], t - before[1])
